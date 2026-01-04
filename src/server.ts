@@ -4,8 +4,8 @@ import cors from 'cors';
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Jupiter API base URL
-const JUPITER_API = 'https://quote-api.jup.ag/v6';
+// Jupiter API base URL - api.jup.ag/swap/v1 is designed for servers
+const JUPITER_API = 'https://api.jup.ag/swap/v1';
 
 // CORS configuration - allow your Vercel domain
 app.use(cors({
