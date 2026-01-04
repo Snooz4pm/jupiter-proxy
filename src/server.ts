@@ -53,6 +53,7 @@ app.get('/quote', async (req, res) => {
     const response = await fetch(fullUrl, {
       headers: {
         'Accept': 'application/json',
+        'x-api-key': process.env.JUPITER_API_KEY!,
       },
       signal: AbortSignal.timeout(15000),
     });
@@ -117,6 +118,7 @@ app.post('/swap', async (req, res) => {
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
+        'x-api-key': process.env.JUPITER_API_KEY!,
       },
       body: JSON.stringify({
         quoteResponse,
