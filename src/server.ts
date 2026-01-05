@@ -77,7 +77,7 @@ app.get('/quote', async (req, res) => {
 
     // Parse and return
     try {
-      const json = JSON.parse(text);
+      const json = (await response.json()) as any;
       console.log('[Jupiter Proxy] Quote success:', {
         hasInAmount: !!json.inAmount,
         hasOutAmount: !!json.outAmount,
@@ -155,7 +155,7 @@ app.post('/swap', async (req, res) => {
     }
 
     try {
-      const json = JSON.parse(text);
+      const json = (await response.json()) as any;
       console.log('[Jupiter Proxy] Swap success:', {
         hasSwapTransaction: !!json.swapTransaction
       });
