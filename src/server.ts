@@ -50,11 +50,17 @@ app.get('/quote', async (req, res) => {
     const fullUrl = `${JUPITER_API}/quote?${jupiterParams.toString()}`;
     console.log('[Jupiter Proxy] Quote request:', fullUrl);
 
+    // Prepare headers
+    const headers: Record<string, string> = {
+      'Accept': 'application/json',
+    };
+
+    if (process.env.JUPITER_API_KEY) {
+      headers['x-api-key'] = process.env.JUPITER_API_KEY;
+    }
+
     const response = await fetch(fullUrl, {
-      headers: {
-        'Accept': 'application/json',
-        'x-api-key': process.env.JUPITER_API_KEY!,
-      },
+      headers,
       signal: AbortSignal.timeout(15000),
     });
 
@@ -113,18 +119,25 @@ app.post('/swap', async (req, res) => {
     const swapUrl = `${JUPITER_API}/swap`;
     console.log('[Jupiter Proxy] Swap request for user:', userPublicKey);
 
+    // Prepare headers
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    };
+
+    if (process.env.JUPITER_API_KEY) {
+      headers['x-api-key'] = process.env.JUPITER_API_KEY;
+    }
+
     const response = await fetch(swapUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'x-api-key': process.env.JUPITER_API_KEY!,
-      },
+      headers,
       body: JSON.stringify({
         quoteResponse,
         userPublicKey,
         wrapAndUnwrapSol: wrapAndUnwrapSol ?? true,
-        feeAccount,
+        // Enforce fee account from environment (security hardening)
+        feeAccount: process.env.ZENITH_SOL_FEE_RECIPIENT,
         prioritizationFeeLamports,
       }),
       signal: AbortSignal.timeout(15000),
@@ -160,6 +173,38 @@ app.post('/swap', async (req, res) => {
       error: 'Internal proxy error',
       message: error.message
     });
+  }
+});
+
+/**
+ * GET /token-list
+ *
+ * Proxies Jupiter's Strict Token List
+ * URL: https://token.jup.ag/strict
+ */
+app.get('/token-list', async (req, res) => {
+  try {
+    console.log('[Jupiter Proxy] Fetching token list...');
+    const response = await fetch('https://token.jup.ag/strict', {
+      headers: { 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!response.ok) {
+      console.error('[Jupiter Proxy] Token list failed:', response.status);
+      return res.status(response.status).json({ error: 'Failed to fetch token list' });
+    }
+
+    const data = await response.json();
+    console.log('[Jupiter Proxy] Token list fetched:', data.length, 'tokens');
+
+    // Cache control - 1 hour
+    res.set('Cache-Control', 'public, max-age=3600');
+    return res.json(data);
+
+  } catch (error: any) {
+    console.error('[Jupiter Proxy] Token list error:', error);
+    return res.status(500).json({ error: 'Internal proxy error' });
   }
 });
 
