@@ -66,10 +66,10 @@ function dedupeByAddress(tokens: any[]) {
 
 function backendSanityFilter(token: any) {
   if (!token.address) return false;
-  if (!token.symbol || token.symbol.length > 10) return false; // Filter ultra-long spam symbols
-  if ((token.liquidity || 0) < 500) return false; // Filter dust/rugs
-  if ((token.volume24h || 0) < 100) return false; // Filter dead tokens
-
+  if (!token.symbol) return false;
+  if (!token.name) return false;
+  if (!token.logoURI) return false; // IMPORTANT: removes junk
+  if (token.symbol.length > 10) return false; // spam symbols
   return true;
 }
 
@@ -101,8 +101,7 @@ app.get('/tokens', async (req, res) => {
     return res.json({
       source: 'jupiter-strict-cache',
       count: deduped.length,
-      // Optional: Sort by daily volume if available, else standard order
-      tokens: deduped.sort((a, b) => (b.volume24h || 0) - (a.volume24h || 0))
+      tokens: deduped
     });
 
   } catch (error: any) {
