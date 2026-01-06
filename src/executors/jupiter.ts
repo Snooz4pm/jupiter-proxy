@@ -1,46 +1,90 @@
 /**
  * Jupiter Executor
  * Multi-hop routing, best prices for established tokens
+ * With DNS hardening for Railway deployment
  */
 
 import { SwapExecutor, SwapParams, Quote, SwapResult } from './types';
 
-// Jupiter public API - the v6 endpoint is the public one
-const JUPITER_API = 'https://quote-api.jup.ag/v6';
+// Multiple Jupiter endpoints for DNS failover
+const JUPITER_QUOTE_ENDPOINTS = [
+  'https://quote-api.jup.ag/v6/quote',
+  'https://public.jupiterapi.com/quote',
+];
 
-async function fetchJupiterWithRetry(url: string, options?: RequestInit): Promise<Response | null> {
-  const maxRetries = 2;
-  
-  for (let i = 0; i <= maxRetries; i++) {
+const JUPITER_SWAP_ENDPOINTS = [
+  'https://quote-api.jup.ag/v6/swap',
+  'https://public.jupiterapi.com/swap',
+];
+
+// Quote cache (15s TTL)
+const quoteCache = new Map<string, { data: any; expires: number }>();
+
+function getCacheKey(p: SwapParams): string {
+  return `${p.inputMint}:${p.outputMint}:${p.amount}:${p.slippageBps}`;
+}
+
+/**
+ * Fetch with failover across multiple endpoints
+ */
+async function fetchWithFailover(
+  urls: string[],
+  options: RequestInit = {},
+  timeoutMs = 8000
+): Promise<Response | null> {
+  let lastError: any;
+
+  for (const url of urls) {
     try {
-      console.log(`[Jupiter] Fetching: ${url}`);
-      const response = await fetch(url, {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+      console.log(`[Jupiter] Trying: ${url.slice(0, 60)}...`);
+      
+      const res = await fetch(url, {
         ...options,
-        signal: AbortSignal.timeout(15000) // 15s timeout
+        signal: controller.signal,
       });
-      
-      if (response.ok) {
-        console.log(`[Jupiter] Success`);
-        return response;
+
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        console.log(`[Jupiter] ✓ Success from ${new URL(url).hostname}`);
+        return res;
       }
+
+      // Log non-OK but continue to next endpoint
+      console.log(`[Jupiter] ${new URL(url).hostname} returned ${res.status}`);
       
-      if (response.status === 429 && i < maxRetries) {
-        console.log(`[Jupiter] Rate limited, retry ${i + 1}...`);
-        await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+      if (res.status === 429) {
+        // Rate limited, try next
         continue;
       }
       
-      console.log(`[Jupiter] Failed with status ${response.status}`);
-      return response;
+      // Return response for other errors (400, 404, etc.)
+      return res;
     } catch (err: any) {
-      console.log(`[Jupiter] Fetch error:`, err.code || err.message);
-      if (i < maxRetries) {
-        await new Promise(r => setTimeout(r, 1000));
-        continue;
-      }
+      lastError = err;
+      const errMsg = err.code || err.name || err.message || 'unknown';
+      console.log(`[Jupiter] ${new URL(url).hostname} failed: ${errMsg}`);
     }
   }
+
+  console.error('[Jupiter] All endpoints failed');
   return null;
+}
+
+/**
+ * Retry helper
+ */
+async function retry<T>(fn: () => Promise<T>, retries = 2, delayMs = 500): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (retries <= 0) throw err;
+    await new Promise(r => setTimeout(r, delayMs));
+    return retry(fn, retries - 1, delayMs * 1.5);
+  }
 }
 
 export class JupiterExecutor implements SwapExecutor {
@@ -55,12 +99,31 @@ export class JupiterExecutor implements SwapExecutor {
   }
 
   async quote(params: SwapParams): Promise<Quote | null> {
+    const cacheKey = getCacheKey(params);
+    const now = Date.now();
+    
+    // Check cache first
+    const cached = quoteCache.get(cacheKey);
+    if (cached && cached.expires > now) {
+      console.log('[Jupiter] ✓ Using cached quote');
+      return cached.data;
+    }
+
     try {
-      const url = `${JUPITER_API}/quote?inputMint=${params.inputMint}&outputMint=${params.outputMint}&amount=${params.amount}&slippageBps=${params.slippageBps}`;
+      const queryParams = new URLSearchParams({
+        inputMint: params.inputMint,
+        outputMint: params.outputMint,
+        amount: params.amount,
+        slippageBps: String(params.slippageBps),
+      });
 
       console.log(`[Jupiter] Getting quote: ${params.inputMint.slice(0,8)}... -> ${params.outputMint.slice(0,8)}...`);
 
-      const response = await fetchJupiterWithRetry(url, {
+      // Build URLs for all endpoints
+      const urls = JUPITER_QUOTE_ENDPOINTS.map(ep => `${ep}?${queryParams}`);
+      
+      const response = await fetchWithFailover(urls, {
+        method: 'GET',
         headers: { 'Accept': 'application/json' }
       });
 
@@ -91,9 +154,9 @@ export class JupiterExecutor implements SwapExecutor {
         return null;
       }
 
-      console.log('[Jupiter] Quote success, output:', data.outAmount);
+      console.log('[Jupiter] ✓ Quote success, output:', data.outAmount);
 
-      return {
+      const quote: Quote = {
         source: 'jupiter',
         inputMint: params.inputMint,
         outputMint: params.outputMint,
@@ -104,6 +167,14 @@ export class JupiterExecutor implements SwapExecutor {
         routePlan: data.routePlan,
         _raw: data
       };
+
+      // Cache the quote (15s TTL)
+      quoteCache.set(cacheKey, {
+        data: quote,
+        expires: now + 15_000,
+      });
+
+      return quote;
     } catch (err) {
       console.error('[Jupiter] Quote error:', err);
       return null;
@@ -120,16 +191,18 @@ export class JupiterExecutor implements SwapExecutor {
         return null;
       }
 
-      const response = await fetchJupiterWithRetry(`${JUPITER_API}/swap`, {
+      const swapPayload = {
+        quoteResponse: quote._raw,
+        userPublicKey,
+        wrapAndUnwrapSol: true,
+        dynamicComputeUnitLimit: true,
+        prioritizationFeeLamports: 'auto'
+      };
+
+      const response = await fetchWithFailover(JUPITER_SWAP_ENDPOINTS, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          quoteResponse: quote._raw,
-          userPublicKey,
-          wrapAndUnwrapSol: true,
-          dynamicComputeUnitLimit: true,
-          prioritizationFeeLamports: 'auto'
-        })
+        body: JSON.stringify(swapPayload)
       });
 
       if (!response) {
@@ -150,7 +223,7 @@ export class JupiterExecutor implements SwapExecutor {
         return null;
       }
 
-      console.log('[Jupiter] Transaction built successfully');
+      console.log('[Jupiter] ✓ Transaction built successfully');
       return {
         swapTransaction: data.swapTransaction,
         source: 'jupiter'
