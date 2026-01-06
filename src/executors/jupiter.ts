@@ -5,48 +5,39 @@
 
 import { SwapExecutor, SwapParams, Quote, SwapResult } from './types';
 
-// Use multiple Jupiter endpoints for redundancy
-// Note: quote-api.jup.ag sometimes has DNS issues on Railway
-const JUPITER_APIS = [
-  'https://api.jup.ag/swap/v1',      // New unified API
-  'https://quote-api.jup.ag/v6',     // Legacy API
-  'https://lite-api.jup.ag/swap/v1'  // Lite API
-];
+// Jupiter public API - the v6 endpoint is the public one
+const JUPITER_API = 'https://quote-api.jup.ag/v6';
 
-async function fetchJupiter(path: string, options?: RequestInit): Promise<Response | null> {
-  for (const baseUrl of JUPITER_APIS) {
+async function fetchJupiterWithRetry(url: string, options?: RequestInit): Promise<Response | null> {
+  const maxRetries = 2;
+  
+  for (let i = 0; i <= maxRetries; i++) {
     try {
-      // Adjust path based on API version
-      let url = baseUrl;
-      if (path.startsWith('/quote')) {
-        url = `${baseUrl}${path}`;
-      } else if (path === '/swap') {
-        url = `${baseUrl}${path}`;
-      } else {
-        url = `${baseUrl}${path}`;
-      }
-      
-      console.log(`[Jupiter] Trying: ${url}`);
+      console.log(`[Jupiter] Fetching: ${url}`);
       const response = await fetch(url, {
         ...options,
-        signal: AbortSignal.timeout(10000) // 10s timeout
+        signal: AbortSignal.timeout(15000) // 15s timeout
       });
       
       if (response.ok) {
-        console.log(`[Jupiter] Success from ${baseUrl}`);
+        console.log(`[Jupiter] Success`);
         return response;
       }
       
-      if (response.status === 429) {
-        console.log(`[Jupiter] ${baseUrl} rate limited`);
+      if (response.status === 429 && i < maxRetries) {
+        console.log(`[Jupiter] Rate limited, retry ${i + 1}...`);
+        await new Promise(r => setTimeout(r, 1000 * (i + 1)));
         continue;
       }
       
-      // Return non-OK response if it's not a connection error
-      console.log(`[Jupiter] ${baseUrl} returned ${response.status}`);
+      console.log(`[Jupiter] Failed with status ${response.status}`);
       return response;
     } catch (err: any) {
-      console.log(`[Jupiter] ${baseUrl} failed:`, err.code || err.message);
+      console.log(`[Jupiter] Fetch error:`, err.code || err.message);
+      if (i < maxRetries) {
+        await new Promise(r => setTimeout(r, 1000));
+        continue;
+      }
     }
   }
   return null;
@@ -65,11 +56,11 @@ export class JupiterExecutor implements SwapExecutor {
 
   async quote(params: SwapParams): Promise<Quote | null> {
     try {
-      const queryParams = `?inputMint=${params.inputMint}&outputMint=${params.outputMint}&amount=${params.amount}&slippageBps=${params.slippageBps}`;
+      const url = `${JUPITER_API}/quote?inputMint=${params.inputMint}&outputMint=${params.outputMint}&amount=${params.amount}&slippageBps=${params.slippageBps}`;
 
-      console.log(`[Jupiter] Getting quote: ${params.inputMint} -> ${params.outputMint}`);
+      console.log(`[Jupiter] Getting quote: ${params.inputMint.slice(0,8)}... -> ${params.outputMint.slice(0,8)}...`);
 
-      const response = await fetchJupiter(`/quote${queryParams}`, {
+      const response = await fetchJupiterWithRetry(url, {
         headers: { 'Accept': 'application/json' }
       });
 
@@ -129,7 +120,7 @@ export class JupiterExecutor implements SwapExecutor {
         return null;
       }
 
-      const response = await fetchJupiter('/swap', {
+      const response = await fetchJupiterWithRetry(`${JUPITER_API}/swap`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

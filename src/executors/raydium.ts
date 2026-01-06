@@ -93,7 +93,15 @@ export class RaydiumExecutor implements SwapExecutor {
       const swapResponseData = rawResponse.data || rawResponse;
       
       console.log('[Raydium] Raw response keys:', Object.keys(rawResponse));
-      console.log('[Raydium] SwapResponse has inputMint:', !!swapResponseData.inputMint);
+      console.log('[Raydium] swapResponseData keys:', Object.keys(swapResponseData));
+      console.log('[Raydium] swapResponseData.routePlan exists:', !!swapResponseData.routePlan);
+      
+      // Validate required fields
+      if (!swapResponseData.inputMint || !swapResponseData.outputMint || !swapResponseData.routePlan) {
+        console.error('[Raydium] Missing required fields in swapResponseData');
+        console.error('[Raydium] Full swapResponseData:', JSON.stringify(swapResponseData).slice(0, 500));
+        return null;
+      }
 
       // Get priority fee
       let priorityFee = 100000;
