@@ -3,7 +3,7 @@ import cors from 'cors';
 import { Server } from 'socket.io';
 import http from 'http';
 import { Connection, PublicKey } from '@solana/web3.js';
-import { getMint } from '@solana/spl-token';
+import { getMint, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
 
 const app = express();
 const server = http.createServer(app);
@@ -25,9 +25,36 @@ const JUPITER_SWAP_ENDPOINTS = [
 // ============================================
 // PLATFORM FEE CONFIGURATION (REVENUE)
 // ============================================
-// Your wallet receives 0.5% of each swap
+// Your wallet receives 0.5% of each swap (paid in output token)
 const PLATFORM_FEE_BPS = 50; // 0.5% = 50 basis points
-const FEE_ACCOUNT = 'GRd3X2emDp2nmSXt1GrM9KA8EDeqW4ifgP3muwoTmzqb';
+const FEE_WALLET = new PublicKey('GRd3X2emDp2nmSXt1GrM9KA8EDeqW4ifgP3muwoTmzqb');
+
+// Native SOL mint address (for wrapping/unwrapping)
+const NATIVE_SOL_MINT = new PublicKey('So11111111111111111111111111111111111111112');
+
+/**
+ * Get the Associated Token Account (ATA) for fee collection
+ * Fees are collected in the OUTPUT token of the swap
+ */
+function getFeeTokenAccount(outputMint: string): string {
+  try {
+    const mintPubkey = new PublicKey(outputMint);
+    
+    // For native SOL, use wrapped SOL (WSOL) ATA
+    const ata = getAssociatedTokenAddressSync(
+      mintPubkey,
+      FEE_WALLET,
+      true, // allowOwnerOffCurve
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+    
+    return ata.toBase58();
+  } catch (err) {
+    console.error('[FEE] Error computing ATA:', err);
+    return '';
+  }
+}
 
 // ============================================
 // QUOTE CACHE (15s TTL - NO SPAM)
@@ -136,7 +163,47 @@ app.get('/health', (req, res) => {
     service: 'jupiter-proxy', 
     mode: 'jupiter-only',
     platformFee: `${PLATFORM_FEE_BPS / 100}%`,
-    feeRecipient: FEE_ACCOUNT.slice(0, 8) + '...'
+    feeWallet: FEE_WALLET.toBase58().slice(0, 8) + '...'
+  });
+});
+
+// ============================================
+// FEE ACCOUNT INFO (for debugging)
+// ============================================
+app.get('/fee-info', (req, res) => {
+  const { mint } = req.query as { mint?: string };
+  
+  // Common tokens ATAs
+  const commonMints = [
+    { symbol: 'USDC', mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' },
+    { symbol: 'USDT', mint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB' },
+    { symbol: 'SOL (Wrapped)', mint: 'So11111111111111111111111111111111111111112' },
+    { symbol: 'JUP', mint: 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN' },
+    { symbol: 'JLP', mint: '27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4' },
+    { symbol: 'BONK', mint: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263' },
+  ];
+  
+  const accounts = commonMints.map(t => ({
+    ...t,
+    feeATA: getFeeTokenAccount(t.mint)
+  }));
+  
+  // If specific mint requested
+  let requestedATA = null;
+  if (mint) {
+    requestedATA = {
+      mint,
+      feeATA: getFeeTokenAccount(mint)
+    };
+  }
+  
+  res.json({
+    feeWallet: FEE_WALLET.toBase58(),
+    platformFeeBps: PLATFORM_FEE_BPS,
+    platformFeePercent: `${PLATFORM_FEE_BPS / 100}%`,
+    note: 'These ATAs must be initialized on-chain to receive fees. Use Phantom or Solana CLI to create them.',
+    requestedATA,
+    commonTokenATAs: accounts
   });
 });
 
@@ -272,17 +339,27 @@ app.post('/swap', async (req, res) => {
       return res.status(400).json({ error: 'Missing quoteResponse or userPublicKey' });
     }
 
-    console.log(`[SWAP] Building tx for ${userPublicKey.slice(0,8)}... (fee: ${PLATFORM_FEE_BPS}bps -> ${FEE_ACCOUNT.slice(0,8)}...)`);
+    // Get the output mint from the quote to compute fee ATA
+    const outputMint = quoteResponse.outputMint;
+    const feeTokenAccount = getFeeTokenAccount(outputMint);
+    
+    console.log(`[SWAP] Building tx for ${userPublicKey.slice(0,8)}...`);
+    console.log(`[SWAP] Fee: ${PLATFORM_FEE_BPS}bps -> ATA: ${feeTokenAccount.slice(0,8)}... (mint: ${outputMint.slice(0,8)}...)`);
 
-    const swapPayload = {
+    // Build swap payload with fee collection
+    const swapPayload: any = {
       quoteResponse,
       userPublicKey,
       wrapAndUnwrapSol,
       dynamicComputeUnitLimit: true,
       prioritizationFeeLamports: 'auto',
-      // Platform fee collection - sends 0.5% to your wallet
-      feeAccount: FEE_ACCOUNT
     };
+    
+    // Only add feeAccount if we have a valid ATA
+    // Note: The ATA must exist on-chain for fee collection to work
+    if (feeTokenAccount) {
+      swapPayload.feeAccount = feeTokenAccount;
+    }
 
     const response = await fetchWithFailover(JUPITER_SWAP_ENDPOINTS, {
       method: 'POST',
