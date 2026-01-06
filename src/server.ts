@@ -64,10 +64,28 @@ app.get('/tokens', async (req, res) => {
 
       if (dexData.pairs && dexData.pairs.length > 0) {
         console.log(`[TOKENS] Fallback: DexScreener returned ${dexData.pairs.length} pairs`);
+
+        // Transform DexScreener pairs to Jupiter token format
+        const transformedTokens = dexData.pairs
+          .filter((pair: any) => pair.baseToken && pair.baseToken.address)
+          .map((pair: any) => ({
+            address: pair.baseToken.address,
+            symbol: pair.baseToken.symbol || 'UNKNOWN',
+            name: pair.baseToken.name || pair.baseToken.symbol || 'Unknown Token',
+            decimals: 9, // Standard Solana decimals
+            logoURI: pair.info?.imageUrl || null,
+            tags: ['dexscreener'],
+            // Include price data for immediate use
+            priceUsd: parseFloat(pair.priceUsd) || 0,
+            liquidity: parseFloat(pair.liquidity?.usd) || 0,
+            volume24h: parseFloat(pair.volume?.h24) || 0,
+            priceChange24h: parseFloat(pair.priceChange?.h24) || 0
+          }));
+
         return res.json({
           source: 'dexscreener',
-          count: dexData.pairs.length,
-          tokens: dexData.pairs.slice(0, 50)
+          count: transformedTokens.length,
+          tokens: transformedTokens.slice(0, 50)
         });
       }
 
