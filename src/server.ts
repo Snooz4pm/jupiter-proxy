@@ -7,6 +7,38 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { getMint, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
 
 const app = express();
+
+// ============================================
+// WALLET BALANCE ENDPOINT (for frontend)
+// ============================================
+app.get('/api/wallet/:pubkey', async (req, res) => {
+  try {
+    const pubkey = req.params.pubkey;
+    if (!pubkey) return res.status(400).json({ error: 'Missing pubkey' });
+
+    const connection = new Connection(process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com');
+    const owner = new PublicKey(pubkey);
+
+    // Get SOL balance
+    const balanceLamports = await connection.getBalance(owner);
+
+    // Get SPL token accounts
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(owner, { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') });
+    const tokens = tokenAccounts.value.map(acc => {
+      const info = acc.account.data.parsed.info;
+      return {
+        mint: info.mint,
+        amount: parseFloat(info.tokenAmount.uiAmountString || '0'),
+        decimals: info.tokenAmount.decimals
+      };
+    });
+
+    res.json({ balanceLamports, tokens });
+  } catch (err) {
+    console.error('[WalletBalance] Fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch wallet snapshot' });
+  }
+});
 const server = http.createServer(app);
 const PORT = process.env.PORT || 3001;
 
