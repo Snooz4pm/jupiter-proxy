@@ -22,68 +22,112 @@ app.use(cors({
 
 app.use(express.json());
 
+// ============================================
+// TOKEN CACHE (MANDATORY - Jupiter will throttle)
+// ============================================
+let cachedTokens: any = null;
+let lastFetch = 0;
+const CACHE_TTL = 1000 * 60 * 30; // 30 minutes
+
+async function getJupiterTokenUniverse() {
+  if (cachedTokens && Date.now() - lastFetch < CACHE_TTL) {
+    console.log('[TOKENS] Returning cached Jupiter universe');
+    return cachedTokens;
+  }
+
+  console.log('[TOKENS] Fetching fresh Jupiter token universe...');
+  const res = await fetch(`${JUPITER_API}/tokens`, {
+    headers: { 'User-Agent': 'ZenithScores/1.0' },
+    signal: AbortSignal.timeout(10000)
+  });
+
+  if (!res.ok) {
+    throw new Error(`Jupiter v6/tokens returned ${res.status}`);
+  }
+
+  const tokens = await res.json();
+  cachedTokens = tokens;
+  lastFetch = Date.now();
+
+  console.log(`[TOKENS] Cached ${tokens.length} tokens from Jupiter`);
+  return tokens;
+}
+
 // Health Check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'jupiter-proxy' });
+  res.json({
+    status: 'ok',
+    service: 'jupiter-proxy',
+    cache: cachedTokens ? 'warm' : 'cold'
+  });
 });
 
 // ============================================
-// TOKEN LIST ENDPOINT (PRIMARY DATA SOURCE)
+// TOKEN LIST ENDPOINT (LAYER 1: Universe)
 // ============================================
 app.get('/tokens', async (req, res) => {
   try {
-    console.log('[TOKENS] Fetching Jupiter token list...');
+    const jupTokens = await getJupiterTokenUniverse();
 
-    // Try Jupiter /all endpoint
-    const jupiterRes = await fetch('https://token.jup.ag/all', {
-      headers: { 'User-Agent': 'ZenithScores/1.0' },
+    // Return normalized schema
+    res.json({
+      source: 'jupiter',
+      count: jupTokens.length,
+      tokens: jupTokens.map((t: any) => ({
+        mint: t.address,
+        symbol: t.symbol,
+        name: t.name,
+        decimals: t.decimals,
+        logoURI: t.logoURI,
+        tags: t.tags || []
+      }))
+    });
+
+  } catch (error: any) {
+    console.error('[TOKENS] Jupiter universe fetch failed:', error.message);
+
+    // Return empty but valid response (never crash UI)
+    res.status(503).json({
+      source: 'none',
+      count: 0,
+      tokens: [],
+      error: 'Token universe temporarily unavailable'
+    });
+  }
+});
+
+// ============================================
+// DEXSCREENER ENDPOINT (LAYER 3: Market Data)
+// ============================================
+app.get('/market-data', async (req, res) => {
+  try {
+    console.log('[MARKET] Fetching DexScreener trending...');
+
+    const dexRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=SOL', {
       signal: AbortSignal.timeout(8000)
     });
 
-    if (!jupiterRes.ok) {
-      throw new Error(`Jupiter API returned ${jupiterRes.status}`);
+    if (!dexRes.ok) {
+      throw new Error(`DexScreener returned ${dexRes.status}`);
     }
 
-    const tokens = await jupiterRes.json();
-    console.log(`[TOKENS] Successfully fetched ${tokens.length} tokens from Jupiter`);
+    const data: any = await dexRes.json();
+    const solanaPairs = data.pairs?.filter((p: any) => p.chainId === 'solana') || [];
 
-    // Return first 200 tokens (performance)
-    return res.json({
-      source: 'jupiter',
-      count: tokens.length,
-      tokens: tokens.slice(0, 200)
+    res.json({
+      source: 'dexscreener',
+      count: solanaPairs.length,
+      pairs: solanaPairs
     });
 
-  } catch (jupiterError: any) {
-    console.error('[TOKENS] Jupiter failed, trying DexScreener fallback:', jupiterError.message);
-
-    try {
-      // Fallback to DexScreener
-      const dexRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=SOL');
-      const dexData: any = await dexRes.json();
-
-      if (dexData.pairs && dexData.pairs.length > 0) {
-        console.log(`[TOKENS] Fallback: DexScreener returned ${dexData.pairs.length} pairs`);
-        return res.json({
-          source: 'dexscreener',
-          count: dexData.pairs.length,
-          tokens: dexData.pairs.slice(0, 50)
-        });
-      }
-
-      throw new Error('DexScreener returned no data');
-
-    } catch (fallbackError: any) {
-      console.error('[TOKENS] All sources failed:', fallbackError.message);
-
-      // Return empty but valid response
-      return res.status(503).json({
-        source: 'none',
-        count: 0,
-        tokens: [],
-        error: 'Token data sources temporarily unavailable'
-      });
-    }
+  } catch (error: any) {
+    console.error('[MARKET] DexScreener failed:', error.message);
+    res.status(503).json({
+      source: 'none',
+      count: 0,
+      pairs: [],
+      error: 'Market data temporarily unavailable'
+    });
   }
 });
 
@@ -133,5 +177,6 @@ app.post('/swap', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Jupiter Proxy running on port ${PORT}`);
-  console.log(`� CORS enabled for: ${allowedOrigins.join(', ')}`);
+  console.log(`📡 CORS enabled for: ${allowedOrigins.join(', ')}`);
+  console.log(`🔗 Jupiter API: ${JUPITER_API}`);
 });
