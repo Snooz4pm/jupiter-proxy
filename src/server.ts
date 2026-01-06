@@ -133,13 +133,30 @@ app.get('/tokens', async (req, res) => {
   }
 });
 
-// Jupiter Quote Proxy
+import { getRaydiumPool, raydiumQuote, hasMinimumLiquidity } from './raydium';
+
+// Jupiter Quote Proxy (with Raydium fallback)
 app.get('/quote', async (req, res) => {
   try {
+    const { inputMint, outputMint, amount, slippageBps } = req.query as any;
+
+    // 🚫 Defensive guards
+    if (!inputMint || !outputMint) {
+      return res.status(400).json({ error: 'INVALID_PAIR', message: 'Missing inputMint or outputMint' });
+    }
+
+    if (inputMint === outputMint) {
+      return res.status(400).json({ error: 'SAME_TOKEN', message: 'Cannot swap same token' });
+    }
+
+    if (!amount || Number(amount) <= 0) {
+      return res.status(400).json({ error: 'INVALID_AMOUNT', message: 'Invalid amount' });
+    }
+
     const queryParams = new URLSearchParams(req.query as any).toString();
     const jupiterUrl = `${JUPITER_API}/quote?${queryParams}`;
 
-    console.log('[QUOTE] Proxying to Jupiter:', jupiterUrl);
+    console.log('[QUOTE] Trying Jupiter:', jupiterUrl);
 
     const response = await fetch(jupiterUrl, {
       headers: {
@@ -148,11 +165,52 @@ app.get('/quote', async (req, res) => {
       }
     });
 
-    const data = await response.json();
-    res.json(data);
+    // Jupiter success
+    if (response.ok) {
+      const data = await response.json();
+      
+      if (data && data.routePlan && data.routePlan.length > 0) {
+        console.log('[QUOTE] Jupiter route found');
+        return res.json({ ...data, source: 'jupiter' });
+      }
+    }
+
+    // Jupiter failed or no route — try Raydium fallback
+    console.log('[QUOTE] Jupiter NO_ROUTE, trying Raydium fallback...');
+
+    const pool = await getRaydiumPool(inputMint, outputMint);
+    
+    if (pool && hasMinimumLiquidity(pool)) {
+      const amountIn = BigInt(amount);
+      const { amountOut, priceImpact } = raydiumQuote(pool, inputMint, amountIn);
+
+      console.log('[QUOTE] Raydium pool found:', pool.id);
+
+      return res.json({
+        source: 'raydium',
+        poolId: pool.id,
+        inputMint,
+        outputMint,
+        inAmount: amount,
+        outAmount: amountOut.toString(),
+        priceImpactPct: priceImpact.toFixed(6),
+        routePlan: [{ poolId: pool.id, source: 'raydium' }],
+        slippageBps: Number(slippageBps) || 50,
+      });
+    }
+
+    // No route anywhere
+    console.log('[QUOTE] No route found (Jupiter + Raydium)');
+    return res.status(200).json({
+      routePlan: [],
+      error: 'NO_ROUTE',
+      message: 'No liquidity route available for this pair'
+    });
+
   } catch (error) {
     console.error('[QUOTE] Error:', error);
-    res.status(500).json({ error: 'Quote fetch failed' });
+    // Network/system errors are still 500
+    res.status(500).json({ error: 'Quote fetch failed', routePlan: [] });
   }
 });
 
