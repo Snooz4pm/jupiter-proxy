@@ -24,99 +24,66 @@ app.use(express.json());
 
 // Health Check
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'jupiter-proxy'
-  });
+  res.json({ status: 'ok', service: 'jupiter-proxy' });
 });
 
 // ============================================
-// TOKEN LIST ENDPOINT (LAYER 1: Universe)
+// TOKEN LIST ENDPOINT (PRIMARY DATA SOURCE)
 // ============================================
 app.get('/tokens', async (req, res) => {
   try {
-    // Hard timeout to prevent hangs
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    console.log('[TOKENS] Fetching Jupiter token list...');
 
-    const r = await fetch(`${JUPITER_API}/tokens`, {
-      headers: {
-        'accept': 'application/json',
-        'user-agent': 'ZenithScores'
-      },
-      signal: controller.signal
-    });
-
-    clearTimeout(timeout);
-
-    if (!r.ok) {
-      throw new Error(`Jupiter HTTP ${r.status}`);
-    }
-
-    const tokens = await r.json();
-    console.log(`[TOKENS] Successfully fetched ${tokens.length} tokens from Jupiter`);
-
-    // Return normalized schema
-    res.json({
-      source: 'jupiter',
-      count: tokens.length,
-      tokens: tokens.map((t: any) => ({
-        mint: t.address,
-        symbol: t.symbol,
-        name: t.name,
-        decimals: t.decimals,
-        logoURI: t.logoURI,
-        tags: t.tags || []
-      }))
-    });
-
-  } catch (error: any) {
-    console.error('JUPITER FETCH ERROR:', error);
-    console.error('Error name:', error.name);
-    console.error('Error message:', error.message);
-
-    // Return empty but valid response (never crash UI)
-    res.status(500).json({
-      source: 'none',
-      count: 0,
-      tokens: [],
-      error: error.message || 'Token universe temporarily unavailable'
-    });
-  }
-});
-
-// ============================================
-// DEXSCREENER ENDPOINT (LAYER 3: Market Data)
-// ============================================
-app.get('/market-data', async (req, res) => {
-  try {
-    console.log('[MARKET] Fetching DexScreener trending...');
-
-    const dexRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=SOL', {
+    // Try Jupiter /all endpoint
+    const jupiterRes = await fetch('https://token.jup.ag/all', {
+      headers: { 'User-Agent': 'ZenithScores/1.0' },
       signal: AbortSignal.timeout(8000)
     });
 
-    if (!dexRes.ok) {
-      throw new Error(`DexScreener returned ${dexRes.status}`);
+    if (!jupiterRes.ok) {
+      throw new Error(`Jupiter API returned ${jupiterRes.status}`);
     }
 
-    const data: any = await dexRes.json();
-    const solanaPairs = data.pairs?.filter((p: any) => p.chainId === 'solana') || [];
+    const tokens = await jupiterRes.json();
+    console.log(`[TOKENS] Successfully fetched ${tokens.length} tokens from Jupiter`);
 
-    res.json({
-      source: 'dexscreener',
-      count: solanaPairs.length,
-      pairs: solanaPairs
+    // Return first 200 tokens (performance)
+    return res.json({
+      source: 'jupiter',
+      count: tokens.length,
+      tokens: tokens.slice(0, 200)
     });
 
-  } catch (error: any) {
-    console.error('[MARKET] DexScreener failed:', error.message);
-    res.status(503).json({
-      source: 'none',
-      count: 0,
-      pairs: [],
-      error: 'Market data temporarily unavailable'
-    });
+  } catch (jupiterError: any) {
+    console.error('[TOKENS] Jupiter failed, trying DexScreener fallback:', jupiterError.message);
+
+    try {
+      // Fallback to DexScreener
+      const dexRes = await fetch('https://api.dexscreener.com/latest/dex/search?q=SOL');
+      const dexData: any = await dexRes.json();
+
+      if (dexData.pairs && dexData.pairs.length > 0) {
+        console.log(`[TOKENS] Fallback: DexScreener returned ${dexData.pairs.length} pairs`);
+        return res.json({
+          source: 'dexscreener',
+          count: dexData.pairs.length,
+          tokens: dexData.pairs.slice(0, 50)
+        });
+      }
+
+      throw new Error('DexScreener returned no data');
+
+    } catch (fallbackError: any) {
+      console.error('[TOKENS] All sources failed:', fallbackError.message);
+
+      // Return empty but valid response
+      return res.status(503).json({
+        source: 'none',
+        count: 0,
+        tokens: [],
+        error: 'Token data sources temporarily unavailable'
+      });
+    }
   }
 });
 
@@ -166,6 +133,5 @@ app.post('/swap', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Jupiter Proxy running on port ${PORT}`);
-  console.log(`📡 CORS enabled for: ${allowedOrigins.join(', ')}`);
-  console.log(`🔗 Jupiter API: ${JUPITER_API}`);
+  console.log(`� CORS enabled for: ${allowedOrigins.join(', ')}`);
 });
