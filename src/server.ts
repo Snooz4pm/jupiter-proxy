@@ -23,6 +23,13 @@ const JUPITER_SWAP_ENDPOINTS = [
 ];
 
 // ============================================
+// PLATFORM FEE CONFIGURATION (REVENUE)
+// ============================================
+// Your wallet receives 0.5% of each swap
+const PLATFORM_FEE_BPS = 50; // 0.5% = 50 basis points
+const FEE_ACCOUNT = 'GRd3X2emDp2nmSXt1GrM9KA8EDeqW4ifgP3muwoTmzqb';
+
+// ============================================
 // QUOTE CACHE (15s TTL - NO SPAM)
 // ============================================
 type CachedQuote = { data: any; expires: number };
@@ -124,7 +131,13 @@ app.use(express.json());
 // HEALTH CHECK
 // ============================================
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'jupiter-proxy', mode: 'jupiter-only' });
+  res.json({ 
+    status: 'ok', 
+    service: 'jupiter-proxy', 
+    mode: 'jupiter-only',
+    platformFee: `${PLATFORM_FEE_BPS / 100}%`,
+    feeRecipient: FEE_ACCOUNT.slice(0, 8) + '...'
+  });
 });
 
 // ============================================
@@ -205,8 +218,14 @@ app.get('/quote', async (req, res) => {
       return res.json(cached.data);
     }
 
-    // Build URLs for failover
-    const params = new URLSearchParams({ inputMint, outputMint, amount, slippageBps });
+    // Build URLs for failover (include platform fee)
+    const params = new URLSearchParams({ 
+      inputMint, 
+      outputMint, 
+      amount, 
+      slippageBps,
+      platformFeeBps: PLATFORM_FEE_BPS.toString()
+    });
     const urls = JUPITER_QUOTE_ENDPOINTS.map(ep => `${ep}?${params}`);
 
     const response = await fetchWithFailover(urls, { method: 'GET' });
@@ -253,14 +272,16 @@ app.post('/swap', async (req, res) => {
       return res.status(400).json({ error: 'Missing quoteResponse or userPublicKey' });
     }
 
-    console.log(`[SWAP] Building tx for ${userPublicKey.slice(0,8)}...`);
+    console.log(`[SWAP] Building tx for ${userPublicKey.slice(0,8)}... (fee: ${PLATFORM_FEE_BPS}bps -> ${FEE_ACCOUNT.slice(0,8)}...)`);
 
     const swapPayload = {
       quoteResponse,
       userPublicKey,
       wrapAndUnwrapSol,
       dynamicComputeUnitLimit: true,
-      prioritizationFeeLamports: 'auto'
+      prioritizationFeeLamports: 'auto',
+      // Platform fee collection - sends 0.5% to your wallet
+      feeAccount: FEE_ACCOUNT
     };
 
     const response = await fetchWithFailover(JUPITER_SWAP_ENDPOINTS, {
