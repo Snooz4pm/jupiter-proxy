@@ -22,43 +22,11 @@ app.use(cors({
 
 app.use(express.json());
 
-// ============================================
-// TOKEN CACHE (MANDATORY - Jupiter will throttle)
-// ============================================
-let cachedTokens: any = null;
-let lastFetch = 0;
-const CACHE_TTL = 1000 * 60 * 30; // 30 minutes
-
-async function getJupiterTokenUniverse() {
-  if (cachedTokens && Date.now() - lastFetch < CACHE_TTL) {
-    console.log('[TOKENS] Returning cached Jupiter universe');
-    return cachedTokens;
-  }
-
-  console.log('[TOKENS] Fetching fresh Jupiter token universe...');
-  const res = await fetch(`${JUPITER_API}/tokens`, {
-    headers: { 'User-Agent': 'ZenithScores/1.0' },
-    signal: AbortSignal.timeout(10000)
-  });
-
-  if (!res.ok) {
-    throw new Error(`Jupiter v6/tokens returned ${res.status}`);
-  }
-
-  const tokens = await res.json();
-  cachedTokens = tokens;
-  lastFetch = Date.now();
-
-  console.log(`[TOKENS] Cached ${tokens.length} tokens from Jupiter`);
-  return tokens;
-}
-
 // Health Check
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    service: 'jupiter-proxy',
-    cache: cachedTokens ? 'warm' : 'cold'
+    service: 'jupiter-proxy'
   });
 });
 
@@ -67,13 +35,32 @@ app.get('/health', (req, res) => {
 // ============================================
 app.get('/tokens', async (req, res) => {
   try {
-    const jupTokens = await getJupiterTokenUniverse();
+    // Hard timeout to prevent hangs
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+
+    const r = await fetch(`${JUPITER_API}/tokens`, {
+      headers: {
+        'accept': 'application/json',
+        'user-agent': 'ZenithScores'
+      },
+      signal: controller.signal
+    });
+
+    clearTimeout(timeout);
+
+    if (!r.ok) {
+      throw new Error(`Jupiter HTTP ${r.status}`);
+    }
+
+    const tokens = await r.json();
+    console.log(`[TOKENS] Successfully fetched ${tokens.length} tokens from Jupiter`);
 
     // Return normalized schema
     res.json({
       source: 'jupiter',
-      count: jupTokens.length,
-      tokens: jupTokens.map((t: any) => ({
+      count: tokens.length,
+      tokens: tokens.map((t: any) => ({
         mint: t.address,
         symbol: t.symbol,
         name: t.name,
@@ -84,14 +71,16 @@ app.get('/tokens', async (req, res) => {
     });
 
   } catch (error: any) {
-    console.error('[TOKENS] Jupiter universe fetch failed:', error.message);
+    console.error('JUPITER FETCH ERROR:', error);
+    console.error('Error name:', error.name);
+    console.error('Error message:', error.message);
 
     // Return empty but valid response (never crash UI)
-    res.status(503).json({
+    res.status(500).json({
       source: 'none',
       count: 0,
       tokens: [],
-      error: 'Token universe temporarily unavailable'
+      error: error.message || 'Token universe temporarily unavailable'
     });
   }
 });
