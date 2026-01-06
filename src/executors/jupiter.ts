@@ -76,6 +76,12 @@ export class JupiterExecutor implements SwapExecutor {
   async swap(quote: Quote, userPublicKey: string): Promise<SwapResult | null> {
     try {
       console.log('[Jupiter] Building swap transaction');
+      console.log('[Jupiter] Quote _raw exists:', !!quote._raw);
+      
+      if (!quote._raw) {
+        console.error('[Jupiter] Missing _raw quote data - cannot build swap');
+        return null;
+      }
 
       const response = await fetch(`${JUPITER_API}/swap`, {
         method: 'POST',

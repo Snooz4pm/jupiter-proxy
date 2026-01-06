@@ -252,7 +252,12 @@ app.post('/swap', async (req, res) => {
       return res.status(400).json({ error: 'Missing quoteResponse or userPublicKey' });
     }
 
-    console.log(`[SWAP] Building transaction via ${quoteResponse.source || 'unknown'}`);
+    console.log(`[SWAP] Request received:`);
+    console.log(`[SWAP]   Source: ${quoteResponse.source || 'unknown'}`);
+    console.log(`[SWAP]   Has _raw: ${!!quoteResponse._raw}`);
+    console.log(`[SWAP]   Input: ${quoteResponse.inputMint}`);
+    console.log(`[SWAP]   Output: ${quoteResponse.outputMint}`);
+    console.log(`[SWAP]   User: ${userPublicKey}`);
 
     // Use the smart router to execute the swap
     const result = await executeSwap(quoteResponse, userPublicKey);
