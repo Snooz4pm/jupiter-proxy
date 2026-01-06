@@ -78,52 +78,51 @@ function backendSanityFilter(token: any) {
 // ============================================
 app.get('/tokens', async (req, res) => {
   try {
-    console.log('[TOKENS] Fetching Jupiter strict + all token lists...');
+    console.log('[TOKENS] Fetching from Jupiter cache (new official source)...');
 
-    // Primary: Fetch both strict (verified) and all (full)
-    const [strictRes, allRes] = await Promise.all([
-      fetch('https://token.jup.ag/strict', { signal: AbortSignal.timeout(10000) }),
-      fetch('https://token.jup.ag/all', { signal: AbortSignal.timeout(10000) })
-    ]);
+    // Use the official cache endpoint which returns a full list
+    const response = await fetch('https://cache.jup.ag/tokens', {
+      signal: AbortSignal.timeout(12000), // Longer timeout for big list
+      headers: { 'User-Agent': 'ZenithScores/1.0' }
+    });
 
-    if (!strictRes.ok || !allRes.ok) {
-      throw new Error(`Jupiter API error: strict ${strictRes.status}, all ${allRes.status}`);
+    if (!response.ok) {
+      throw new Error(`Cache API returned ${response.status}`);
     }
 
-    const strictTokens = await strictRes.json();
-    const allTokens = await allRes.json();
+    const tokens = await response.json();
 
-    // Combine: Use strict as base, add extras from all (dedupe)
-    const tokenMap = new Map();
-    [...strictTokens, ...allTokens].forEach(t => {
-      if (!t.address) return;
-      const addr = t.address.toLowerCase();
-      if (!tokenMap.has(addr)) {
-        tokenMap.set(addr, t);
-      }
-    });
+    console.log(`[TOKENS] Successfully fetched ${tokens.length} tokens from cache.jup.ag`);
 
-    const tokens = Array.from(tokenMap.values());
-
-    console.log(`[TOKENS] Successfully fetched ${tokens.length} tokens from Jupiter (strict + all)`);
+    // Optional: Apply your backend sanity filter if you want safer defaults
+    const filtered = tokens.filter(backendSanityFilter);
 
     return res.json({
-      source: 'jupiter-ecosystem',
-      count: tokens.length,
-      tokens: tokens  // Frontend can filter/slice as needed
+      source: 'jupiter-cache',
+      count: filtered.length,
+      tokens: filtered  // Or return all if your frontend handles filtering
     });
 
-  } catch (jupiterError: any) {
-    console.error('[TOKENS] Jupiter failed:', jupiterError.message);
+  } catch (error: any) {
+    console.error('[TOKENS] Cache source failed:', error.message);
 
-    // OPTIONAL: Remove or replace DexScreener fallback entirely
-    // It's unreliable for "all tokens". If you want a backup, use Birdeye or cache last good list.
-    return res.status(503).json({
-      source: 'none',
-      count: 0,
-      tokens: [],
-      error: 'Token data sources temporarily unavailable – retrying soon'
-    });
+    // Optional secondary fallback: strict list from cache
+    try {
+      const strictRes = await fetch('https://cache.jup.ag/strict-tokens');
+      const strictTokens = await strictRes.json();
+      return res.json({
+        source: 'jupiter-cache-strict-fallback',
+        count: strictTokens.length,
+        tokens: strictTokens
+      });
+    } catch (fallbackError) {
+      return res.status(503).json({
+        source: 'none',
+        count: 0,
+        tokens: [],
+        error: 'Token data sources temporarily unavailable – retrying soon'
+      });
+    }
   }
 });
 
