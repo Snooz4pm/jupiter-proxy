@@ -54,7 +54,14 @@ export class RaydiumExecutor implements SwapExecutor {
         return null;
       }
 
-      console.log('[Raydium] Quote success, output:', quoteData.outputAmount);
+      // 🔥 CRITICAL: Check single-hop at QUOTE time
+      // Raydium can ONLY execute single-hop swaps
+      if (!quoteData.routePlan || quoteData.routePlan.length !== 1) {
+        console.log('[Raydium] ❌ Multi-hop route detected, skipping (Raydium only supports single-hop)');
+        return null;
+      }
+
+      console.log('[Raydium] ✓ Single-hop route, output:', quoteData.outputAmount);
 
       return {
         source: 'raydium',
@@ -64,7 +71,7 @@ export class RaydiumExecutor implements SwapExecutor {
         outAmount: quoteData.outputAmount,
         priceImpactPct: String(quoteData.priceImpactPct || 0),
         slippageBps: params.slippageBps,
-        routePlan: quoteData.routePlan || [{ source: 'raydium' }],
+        routePlan: quoteData.routePlan,
         _raw: data
       };
     } catch (err) {
@@ -92,27 +99,15 @@ export class RaydiumExecutor implements SwapExecutor {
       // Extract the FULL swapResponse data
       const swapResponseData = rawResponse.data || rawResponse;
       
-      // Validate we have the FULL response (not just mints)
+      // Validate we have the FULL response
       if (!swapResponseData.routePlan || !swapResponseData.inputAmount || !swapResponseData.outputAmount) {
-        console.error('[Raydium] Incomplete swapResponse! Missing required fields.');
-        console.error('[Raydium] Has routePlan:', !!swapResponseData.routePlan);
-        console.error('[Raydium] Has inputAmount:', !!swapResponseData.inputAmount);
-        console.error('[Raydium] Has outputAmount:', !!swapResponseData.outputAmount);
-        console.error('[Raydium] Keys present:', Object.keys(swapResponseData));
+        console.error('[Raydium] Incomplete swapResponse!');
         return null;
       }
 
-      // Guard: Raydium only supports single-hop swaps
-      const isSingleHop = swapResponseData.routePlan?.length === 1;
-      if (!isSingleHop) {
-        console.log('[Raydium] Multi-hop detected, Raydium only supports single-hop');
-        return null;
-      }
-
-      console.log('[Raydium] Full swapResponse validated:');
+      console.log('[Raydium] Building tx with full swapResponse');
       console.log('[Raydium]   inputAmount:', swapResponseData.inputAmount);
       console.log('[Raydium]   outputAmount:', swapResponseData.outputAmount);
-      console.log('[Raydium]   routePlan length:', swapResponseData.routePlan?.length);
 
       // Get priority fee
       let priorityFee = 100000;
