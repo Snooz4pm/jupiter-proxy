@@ -135,6 +135,25 @@ app.get('/tokens', async (req, res) => {
 
 import { getRaydiumPool, raydiumQuote, hasMinimumLiquidity } from './raydium';
 
+// Simple retry helper for rate limits
+async function fetchWithRetry(url: string, options: RequestInit = {}, maxRetries = 2): Promise<Response> {
+  for (let i = 0; i <= maxRetries; i++) {
+    const response = await fetch(url, options);
+    
+    if (response.status === 429) {
+      if (i < maxRetries) {
+        const delay = Math.pow(2, i) * 1000; // 1s, 2s
+        console.log(`[RETRY] 429 received, waiting ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+    }
+    
+    return response;
+  }
+  throw new Error('Max retries exceeded');
+}
+
 // Jupiter Quote Proxy (with Raydium fallback)
 app.get('/quote', async (req, res) => {
   try {
@@ -158,7 +177,7 @@ app.get('/quote', async (req, res) => {
 
     console.log('[QUOTE] Trying Jupiter:', jupiterUrl);
 
-    const response = await fetch(jupiterUrl, {
+    const response = await fetchWithRetry(jupiterUrl, {
       headers: {
         'Content-Type': 'application/json',
         'User-Agent': 'ZenithScores/1.0'
@@ -228,7 +247,7 @@ app.post('/swap', async (req, res) => {
       prioritizationFeeLamports: 'auto', // Auto priority fees for faster inclusion
     };
 
-    const response = await fetch(`${JUPITER_API}/swap`, {
+    const response = await fetchWithRetry(`${JUPITER_API}/swap`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
