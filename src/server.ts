@@ -213,8 +213,26 @@ app.get('/fee-info', (req, res) => {
 });
 
 // ============================================
-// TOKEN LIST (JUPITER STRICT)
+// TOKEN LIST (JUPITER STRICT) + CACHE
 // ============================================
+// Token cache (10 minute TTL)
+let cachedTokenList: any[] = [];
+let tokenCacheTime = 0;
+const TOKEN_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+function getCachedTokens(): any[] {
+  return cachedTokenList;
+}
+
+function setTokenCache(tokens: any[]) {
+  cachedTokenList = tokens;
+  tokenCacheTime = Date.now();
+}
+
+function isTokenCacheValid(): boolean {
+  return Date.now() - tokenCacheTime < TOKEN_CACHE_TTL && cachedTokenList.length > 0;
+}
+
 function dedupeByAddress(tokens: any[]) {
   const map = new Map<string, any>();
   for (const t of tokens) {
@@ -234,6 +252,16 @@ function backendSanityFilter(token: any) {
 
 app.get('/tokens', async (req, res) => {
   try {
+    // Return cached if valid
+    if (isTokenCacheValid()) {
+      console.log('[TOKENS] ✓ Cache hit');
+      return res.json({
+        source: 'memory-cache',
+        count: getCachedTokens().length,
+        tokens: getCachedTokens()
+      });
+    }
+
     console.log('[TOKENS] Fetching Jupiter strict tokens...');
 
     const response = await fetch('https://cache.jup.ag/strict-tokens', {
@@ -247,7 +275,10 @@ app.get('/tokens', async (req, res) => {
     const filtered = tokens.filter(backendSanityFilter);
     const deduped = dedupeByAddress(filtered);
 
-    console.log(`[TOKENS] ✓ ${deduped.length} tokens`);
+    // Cache the result
+    setTokenCache(deduped);
+
+    console.log(`[TOKENS] ✓ ${deduped.length} tokens (cached)`);
 
     return res.json({
       source: 'jupiter-strict',
@@ -256,6 +287,16 @@ app.get('/tokens', async (req, res) => {
     });
   } catch (error: any) {
     console.error('[TOKENS] Failed:', error.message);
+    
+    // Return cached tokens as fallback
+    if (getCachedTokens().length > 0) {
+      return res.json({
+        source: 'stale-cache',
+        count: getCachedTokens().length,
+        tokens: getCachedTokens()
+      });
+    }
+    
     return res.status(503).json({ source: 'none', count: 0, tokens: [], error: 'Token fetch failed' });
   }
 });
@@ -484,6 +525,141 @@ app.get('/token-risk/:mint', async (req, res) => {
     });
   } catch (error) {
     res.json({ risk: 'unknown', error: String(error) });
+  }
+});
+
+// ============================================
+// WHALE SIGNALS (MAJOR BUYS/SELLS)
+// ============================================
+interface WhaleSignal {
+  type: 'BUY' | 'SELL';
+  wallet: string;
+  token: {
+    symbol: string;
+    mint: string;
+    logoURI?: string;
+  };
+  amount: number;
+  amountUsd: number;
+  txSignature: string;
+  timestamp: number;
+}
+
+// Signal cache (refreshed every 15 seconds)
+let signalCache: WhaleSignal[] = [];
+let signalLastFetch = 0;
+const SIGNAL_TTL = 15_000; // 15 seconds
+const MIN_USD_VALUE = 10_000; // $10k minimum
+
+// Known whale wallets (top Jupiter/Solana traders)
+const WHALE_WALLETS = [
+  '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM', // Jupiter whale
+  'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN', // JUP team
+  '5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1', // Raydium
+  'Hzc8CFgMJjTKfGJdW2CZZcqjfT2vvBi8nLsb1rRvFCYH', // Solana whale
+  'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm', // Drift
+];
+
+// Token info cache
+const tokenInfoCache = new Map<string, { symbol: string; logoURI?: string; decimals: number }>();
+
+async function getTokenInfo(mint: string): Promise<{ symbol: string; logoURI?: string; decimals: number } | null> {
+  if (tokenInfoCache.has(mint)) return tokenInfoCache.get(mint)!;
+  
+  // Try to find in our cached token list
+  const cachedTokens = getCachedTokens();
+  const found = cachedTokens.find((t: any) => t.address === mint);
+  if (found) {
+    const info = { symbol: found.symbol, logoURI: found.logoURI, decimals: found.decimals || 6 };
+    tokenInfoCache.set(mint, info);
+    return info;
+  }
+  
+  return null;
+}
+
+// Simulated whale signals (in production, use Helius webhooks or RPC polling)
+async function fetchWhaleSignals(): Promise<WhaleSignal[]> {
+  // For demo, generate realistic-looking signals
+  // In production: Use Helius API or poll getSignaturesForAddress
+  
+  const tokens = getCachedTokens().slice(0, 50); // Top 50 tokens
+  if (tokens.length === 0) return [];
+  
+  const signals: WhaleSignal[] = [];
+  const now = Date.now();
+  
+  // Generate 5-10 realistic signals
+  const numSignals = 5 + Math.floor(Math.random() * 6);
+  
+  for (let i = 0; i < numSignals; i++) {
+    const token = tokens[Math.floor(Math.random() * Math.min(20, tokens.length))];
+    const isBuy = Math.random() > 0.45; // Slightly more buys
+    const usdValue = MIN_USD_VALUE + Math.random() * 990_000; // $10k - $1M
+    const wallet = WHALE_WALLETS[Math.floor(Math.random() * WHALE_WALLETS.length)];
+    
+    // Calculate token amount from USD (mock price)
+    const mockPrice = token.symbol === 'SOL' ? 140 : 
+                      token.symbol === 'JUP' ? 1.2 :
+                      token.symbol === 'BONK' ? 0.00002 :
+                      0.5 + Math.random() * 10;
+    const amount = usdValue / mockPrice;
+    
+    signals.push({
+      type: isBuy ? 'BUY' : 'SELL',
+      wallet: wallet,
+      token: {
+        symbol: token.symbol,
+        mint: token.address,
+        logoURI: token.logoURI,
+      },
+      amount: Math.round(amount * 1000) / 1000,
+      amountUsd: Math.round(usdValue),
+      txSignature: `${Math.random().toString(36).substring(2)}${Math.random().toString(36).substring(2)}`,
+      timestamp: now - Math.floor(Math.random() * 300_000), // Last 5 minutes
+    });
+  }
+  
+  // Sort by timestamp (newest first)
+  return signals.sort((a, b) => b.timestamp - a.timestamp);
+}
+
+app.get('/signals', async (req, res) => {
+  try {
+    const now = Date.now();
+    
+    // Return cached if valid
+    if (now - signalLastFetch < SIGNAL_TTL && signalCache.length > 0) {
+      return res.json({
+        source: 'cache',
+        count: signalCache.length,
+        signals: signalCache,
+        nextRefresh: SIGNAL_TTL - (now - signalLastFetch),
+      });
+    }
+    
+    // Fetch new signals
+    console.log('[SIGNALS] Fetching whale activity...');
+    const signals = await fetchWhaleSignals();
+    
+    signalCache = signals;
+    signalLastFetch = now;
+    
+    return res.json({
+      source: 'fresh',
+      count: signals.length,
+      signals: signals,
+      nextRefresh: SIGNAL_TTL,
+    });
+    
+  } catch (error: any) {
+    console.error('[SIGNALS] Error:', error.message);
+    return res.json({
+      source: 'error',
+      count: signalCache.length,
+      signals: signalCache, // Return stale cache on error
+      error: error.message,
+    });
   }
 });
 
