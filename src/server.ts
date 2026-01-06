@@ -78,51 +78,43 @@ function backendSanityFilter(token: any) {
 // ============================================
 app.get('/tokens', async (req, res) => {
   try {
-    console.log('[TOKENS] Fetching from Jupiter cache (new official source)...');
+    console.log('[TOKENS] Fetching from Jupiter strict cache (safer official source)...');
 
-    // Use the official cache endpoint which returns a full list
-    const response = await fetch('https://cache.jup.ag/tokens', {
-      signal: AbortSignal.timeout(12000), // Longer timeout for big list
+    // Switch to strict-tokens as primary since full cache can be empty
+    const response = await fetch('https://cache.jup.ag/strict-tokens', {
+      signal: AbortSignal.timeout(15000),
       headers: { 'User-Agent': 'ZenithScores/1.0' }
     });
 
     if (!response.ok) {
-      throw new Error(`Cache API returned ${response.status}`);
+      throw new Error(`Strict tokens API returned ${response.status}`);
     }
 
     const tokens = await response.json();
 
-    console.log(`[TOKENS] Successfully fetched ${tokens.length} tokens from cache.jup.ag`);
+    console.log(`[TOKENS] Successfully fetched ${tokens.length} verified tokens from cache.jup.ag/strict-tokens`);
 
     // Optional: Apply your backend sanity filter if you want safer defaults
     const filtered = tokens.filter(backendSanityFilter);
+    const deduped = dedupeByAddress(filtered);
 
     return res.json({
-      source: 'jupiter-cache',
-      count: filtered.length,
-      tokens: filtered  // Or return all if your frontend handles filtering
+      source: 'jupiter-strict-cache',
+      count: deduped.length,
+      // Optional: Sort by daily volume if available, else standard order
+      tokens: deduped.sort((a, b) => (b.volume24h || 0) - (a.volume24h || 0))
     });
 
   } catch (error: any) {
-    console.error('[TOKENS] Cache source failed:', error.message);
+    console.error('[TOKENS] Strict source failed:', error.message);
 
-    // Optional secondary fallback: strict list from cache
-    try {
-      const strictRes = await fetch('https://cache.jup.ag/strict-tokens');
-      const strictTokens = await strictRes.json();
-      return res.json({
-        source: 'jupiter-cache-strict-fallback',
-        count: strictTokens.length,
-        tokens: strictTokens
-      });
-    } catch (fallbackError) {
-      return res.status(503).json({
-        source: 'none',
-        count: 0,
-        tokens: [],
-        error: 'Token data sources temporarily unavailable – retrying soon'
-      });
-    }
+    // Emergency Fallback
+    return res.status(503).json({
+      source: 'none',
+      count: 0,
+      tokens: [],
+      error: 'Token data sources temporarily unavailable – retrying soon'
+    });
   }
 });
 
