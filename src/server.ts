@@ -257,10 +257,31 @@ app.post('/swap', async (req, res) => {
     console.log(`[SWAP]   Has _raw: ${!!quoteResponse._raw}`);
     console.log(`[SWAP]   Input: ${quoteResponse.inputMint}`);
     console.log(`[SWAP]   Output: ${quoteResponse.outputMint}`);
-    console.log(`[SWAP]   User: ${userPublicKey}`);
+
+    let quoteToUse = quoteResponse;
+
+    // If _raw is missing, re-fetch the quote to get it
+    if (!quoteResponse._raw && quoteResponse.inputMint && quoteResponse.outputMint && quoteResponse.inAmount) {
+      console.log('[SWAP] _raw missing, re-fetching quote...');
+      
+      const freshQuote = await getBestQuote({
+        inputMint: quoteResponse.inputMint,
+        outputMint: quoteResponse.outputMint,
+        amount: quoteResponse.inAmount,
+        slippageBps: quoteResponse.slippageBps || 50
+      });
+
+      if (freshQuote) {
+        console.log(`[SWAP] Fresh quote obtained via ${freshQuote.source}`);
+        quoteToUse = freshQuote;
+      } else {
+        console.error('[SWAP] Failed to re-fetch quote');
+        return res.status(500).json({ error: 'Failed to get fresh quote' });
+      }
+    }
 
     // Use the smart router to execute the swap
-    const result = await executeSwap(quoteResponse, userPublicKey);
+    const result = await executeSwap(quoteToUse, userPublicKey);
 
     if (result) {
       console.log(`[SWAP] ✓ Transaction built via ${result.source}`);
