@@ -129,21 +129,49 @@ export async function getBestQuote(
 }
 
 /**
- * Execute a swap using the quote's source executor
+ * Execute a swap - ALWAYS via Jupiter
+ * 
+ * Rule: Jupiter is the ONLY transaction builder.
+ * Other DEXs (Raydium, Orca, etc.) are quote-only.
  */
 export async function executeSwap(
   quote: Quote,
   userPublicKey: string
 ): Promise<SwapResult | null> {
-  const executor = executors.find(e => e.name === quote.source);
+  console.log(`[Router] Executing swap (quote source: ${quote.source})`);
+  console.log(`[Router] ⚠️ All swaps execute via Jupiter (aggregator)`);
+
+  // ALWAYS use Jupiter for transaction building
+  const jupiterExecutor = executors.find(e => e.name === 'jupiter') as JupiterExecutor;
   
-  if (!executor) {
-    console.error(`[Router] Unknown executor: ${quote.source}`);
+  if (!jupiterExecutor) {
+    console.error('[Router] Jupiter executor not found!');
     return null;
   }
 
-  console.log(`[Router] Executing swap via ${quote.source}`);
-  return executor.swap(quote, userPublicKey);
+  // If the quote came from Jupiter and has _raw, use it directly
+  if (quote.source === 'jupiter' && quote._raw) {
+    console.log('[Router] Using original Jupiter quote for swap');
+    return jupiterExecutor.swap(quote, userPublicKey);
+  }
+
+  // For non-Jupiter quotes, we need to get a fresh Jupiter quote
+  console.log('[Router] Non-Jupiter quote, fetching fresh Jupiter quote for execution...');
+  
+  const freshQuote = await jupiterExecutor.quote({
+    inputMint: quote.inputMint,
+    outputMint: quote.outputMint,
+    amount: quote.inAmount,
+    slippageBps: quote.slippageBps
+  });
+
+  if (!freshQuote) {
+    console.log('[Router] ❌ Jupiter could not find route at execution time');
+    return null;
+  }
+
+  console.log('[Router] ✓ Fresh Jupiter quote obtained, building tx...');
+  return jupiterExecutor.swap(freshQuote, userPublicKey);
 }
 
 /**
