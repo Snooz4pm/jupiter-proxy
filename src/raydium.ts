@@ -1,145 +1,141 @@
 /**
- * Raydium Fallback (Single-Hop Only)
+ * Raydium Trade API Fallback
  * 
  * When Jupiter returns NO_ROUTE:
- * - Check if direct Raydium pool exists
- * - Liquidity >= $30k
- * - Single hop only (no routing graph)
+ * - Use Raydium's Trade API (same pattern as Jupiter)
+ * - 2 requests: quote + serialize
  */
 
-const RAYDIUM_POOLS_URL = 'https://api.raydium.io/v2/sdk/liquidity/mainnet.json';
+const RAYDIUM_API = 'https://transaction-v1.raydium.io';
 
-interface RaydiumPool {
+interface RaydiumQuoteResponse {
   id: string;
-  baseMint: string;
-  quoteMint: string;
-  baseReserve: string;
-  quoteReserve: string;
-  lpMint: string;
-  version: number;
-  programId: string;
-  authority: string;
-  openOrders: string;
-  targetOrders: string;
-  baseVault: string;
-  quoteVault: string;
-  withdrawQueue: string;
-  lpVault: string;
-  marketVersion: number;
-  marketProgramId: string;
-  marketId: string;
-  marketAuthority: string;
-  marketBaseVault: string;
-  marketQuoteVault: string;
-  marketBids: string;
-  marketAsks: string;
-  marketEventQueue: string;
-  lookupTableAccount?: string;
+  success: boolean;
+  version: string;
+  data: {
+    swapType: string;
+    inputMint: string;
+    inputAmount: string;
+    outputMint: string;
+    outputAmount: string;
+    otherAmountThreshold: string;
+    slippageBps: number;
+    priceImpactPct: number;
+    routePlan: any[];
+  };
 }
 
-interface PoolCache {
-  official: RaydiumPool[];
-  unOfficial: RaydiumPool[];
-  timestamp: number;
+interface RaydiumSwapResponse {
+  id: string;
+  version: string;
+  success: boolean;
+  data: { transaction: string }[];
 }
-
-let poolCache: PoolCache | null = null;
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 /**
- * Fetch and cache Raydium pools
+ * Get quote from Raydium Trade API
  */
-export async function getRaydiumPools(): Promise<PoolCache | null> {
-  // Check cache
-  if (poolCache && Date.now() - poolCache.timestamp < CACHE_TTL) {
-    return poolCache;
-  }
-
+export async function getRaydiumQuote(
+  inputMint: string,
+  outputMint: string,
+  amount: string,
+  slippageBps: number = 50
+): Promise<RaydiumQuoteResponse | null> {
   try {
-    const response = await fetch(RAYDIUM_POOLS_URL);
+    const url = `${RAYDIUM_API}/compute/swap-base-in?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amount}&slippageBps=${slippageBps}&txVersion=V0`;
+    
+    console.log('[Raydium] Getting quote:', url);
+    
+    const response = await fetch(url);
+    
     if (!response.ok) {
-      console.error('[Raydium] Failed to fetch pools:', response.status);
+      console.log('[Raydium] Quote failed:', response.status);
       return null;
     }
-
+    
     const data = await response.json();
-    poolCache = {
-      official: data.official || [],
-      unOfficial: data.unOfficial || [],
-      timestamp: Date.now(),
-    };
-
-    console.log(`[Raydium] Cached ${poolCache.official.length} official pools`);
-    return poolCache;
-  } catch (error) {
-    console.error('[Raydium] Pool fetch error:', error);
+    
+    if (!data.success || !data.data) {
+      console.log('[Raydium] No route found');
+      return null;
+    }
+    
+    console.log('[Raydium] Quote success, output:', data.data.outputAmount);
+    return data;
+  } catch (err) {
+    console.error('[Raydium] Quote error:', err);
     return null;
   }
 }
 
 /**
- * Find direct pool for token pair
+ * Get serialized transaction from Raydium
  */
-export async function getRaydiumPool(
+export async function getRaydiumSwapTransaction(
+  swapResponse: RaydiumQuoteResponse,
+  walletPubkey: string,
   inputMint: string,
   outputMint: string
-): Promise<RaydiumPool | null> {
-  const pools = await getRaydiumPools();
-  if (!pools) return null;
+): Promise<string | null> {
+  try {
+    const SOL_MINT = 'So11111111111111111111111111111111111111112';
+    const isInputSol = inputMint === SOL_MINT;
+    const isOutputSol = outputMint === SOL_MINT;
 
-  // Check official pools first
-  const pool = pools.official.find(
-    (p) =>
-      (p.baseMint === inputMint && p.quoteMint === outputMint) ||
-      (p.baseMint === outputMint && p.quoteMint === inputMint)
-  );
+    // Get priority fee
+    let priorityFee = '100000'; // default 0.0001 SOL
+    try {
+      const feeRes = await fetch(`${RAYDIUM_API.replace('transaction-v1', 'api-v3')}/main/auto-fee`);
+      if (feeRes.ok) {
+        const feeData = await feeRes.json();
+        priorityFee = String(feeData?.data?.default?.h || 100000);
+      }
+    } catch {
+      console.log('[Raydium] Using default priority fee');
+    }
 
-  return pool || null;
+    const response = await fetch(`${RAYDIUM_API}/transaction/swap-base-in`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        computeUnitPriceMicroLamports: priorityFee,
+        swapResponse: swapResponse.data,
+        txVersion: 'V0',
+        wallet: walletPubkey,
+        wrapSol: isInputSol,
+        unwrapSol: isOutputSol,
+      })
+    });
+
+    if (!response.ok) {
+      console.log('[Raydium] Swap tx build failed:', response.status);
+      return null;
+    }
+
+    const data: RaydiumSwapResponse = await response.json();
+    
+    if (!data.success || !data.data?.[0]?.transaction) {
+      console.log('[Raydium] No transaction returned');
+      return null;
+    }
+
+    console.log('[Raydium] Transaction built successfully');
+    return data.data[0].transaction;
+  } catch (err) {
+    console.error('[Raydium] Swap tx error:', err);
+    return null;
+  }
 }
 
-/**
- * Calculate quote using constant product formula
- * AMM: x * y = k
- */
-export function raydiumQuote(
-  pool: RaydiumPool,
-  inputMint: string,
-  amountIn: bigint
-): { amountOut: bigint; priceImpact: number } {
-  const isBaseToQuote = pool.baseMint === inputMint;
-  
-  const baseReserve = BigInt(pool.baseReserve);
-  const quoteReserve = BigInt(pool.quoteReserve);
-
-  const [reserveIn, reserveOut] = isBaseToQuote
-    ? [baseReserve, quoteReserve]
-    : [quoteReserve, baseReserve];
-
-  // Constant product formula with 0.25% fee
-  const amountInWithFee = amountIn * BigInt(9975);
-  const numerator = amountInWithFee * reserveOut;
-  const denominator = reserveIn * BigInt(10000) + amountInWithFee;
-  const amountOut = numerator / denominator;
-
-  // Calculate price impact
-  const spotPrice = Number(reserveOut) / Number(reserveIn);
-  const executionPrice = Number(amountOut) / Number(amountIn);
-  const priceImpact = Math.abs((spotPrice - executionPrice) / spotPrice);
-
-  return { amountOut, priceImpact };
+// Legacy exports for backward compatibility (can be removed later)
+export async function getRaydiumPool(inputMint: string, outputMint: string) {
+  return null;
 }
 
-/**
- * Check if pool has sufficient liquidity
- */
-export function hasMinimumLiquidity(
-  pool: RaydiumPool,
-  minLiquidityUsd: number = 30_000
-): boolean {
-  // This would need price data to calculate properly
-  // For now, we check reserves aren't dust
-  const baseReserve = BigInt(pool.baseReserve);
-  const quoteReserve = BigInt(pool.quoteReserve);
+export function raydiumQuote(pool: any, inputMint: string, amountIn: bigint) {
+  return { amountOut: BigInt(0), priceImpact: 100 };
+}
 
-  return baseReserve > BigInt(1_000_000) && quoteReserve > BigInt(1_000_000);
+export function hasMinimumLiquidity(pool: any) {
+  return false;
 }

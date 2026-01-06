@@ -133,7 +133,7 @@ app.get('/tokens', async (req, res) => {
   }
 });
 
-import { getRaydiumPool, raydiumQuote, hasMinimumLiquidity } from './raydium';
+import { getRaydiumQuote, getRaydiumSwapTransaction } from './raydium';
 
 // Simple retry helper for rate limits
 async function fetchWithRetry(url: string, options: RequestInit = {}, maxRetries = 2): Promise<Response | null> {
@@ -199,32 +199,29 @@ app.get('/quote', async (req, res) => {
       }
     }
 
-    // Jupiter failed, rate limited, or no route — try Raydium fallback
-    console.log('[QUOTE] Jupiter unavailable or NO_ROUTE, trying Raydium fallback...');
+    // Jupiter failed, rate limited, or no route — try Raydium Trade API
+    console.log('[QUOTE] Jupiter unavailable, trying Raydium Trade API...');
 
-    let pool = null;
-    try {
-      pool = await getRaydiumPool(inputMint, outputMint);
-    } catch (e) {
-      console.log('[QUOTE] Raydium pool fetch failed:', e);
-    }
-    
-    if (pool && hasMinimumLiquidity(pool)) {
-      const amountIn = BigInt(amount);
-      const { amountOut, priceImpact } = raydiumQuote(pool, inputMint, amountIn);
+    const raydiumQuoteRes = await getRaydiumQuote(
+      inputMint,
+      outputMint,
+      amount,
+      Number(slippageBps) || 50
+    );
 
-      console.log('[QUOTE] Raydium pool found:', pool.id);
-
+    if (raydiumQuoteRes && raydiumQuoteRes.success && raydiumQuoteRes.data) {
+      console.log('[QUOTE] Raydium route found, output:', raydiumQuoteRes.data.outputAmount);
       return res.json({
         source: 'raydium',
-        poolId: pool.id,
         inputMint,
         outputMint,
-        inAmount: amount,
-        outAmount: amountOut.toString(),
-        priceImpactPct: priceImpact.toFixed(6),
-        routePlan: [{ poolId: pool.id, source: 'raydium' }],
-        slippageBps: Number(slippageBps) || 50,
+        inAmount: raydiumQuoteRes.data.inputAmount,
+        outAmount: raydiumQuoteRes.data.outputAmount,
+        priceImpactPct: String(raydiumQuoteRes.data.priceImpactPct || 0),
+        slippageBps: raydiumQuoteRes.data.slippageBps,
+        routePlan: raydiumQuoteRes.data.routePlan || [{ source: 'raydium' }],
+        // Store full response for swap endpoint
+        _raydiumQuote: raydiumQuoteRes
       });
     }
 
@@ -243,10 +240,35 @@ app.get('/quote', async (req, res) => {
   }
 });
 
-// Jupiter Swap Proxy
+// Jupiter Swap Proxy (with Raydium fallback)
 app.post('/swap', async (req, res) => {
   try {
-    console.log('[SWAP] Proxying swap transaction');
+    const { quoteResponse, userPublicKey } = req.body;
+
+    // Check if this is a Raydium quote (has _raydiumQuote marker)
+    if (quoteResponse?._raydiumQuote) {
+      console.log('[SWAP] Using Raydium Trade API for transaction');
+      
+      const raydiumTx = await getRaydiumSwapTransaction(
+        quoteResponse._raydiumQuote,
+        userPublicKey,
+        quoteResponse.inputMint,
+        quoteResponse.outputMint
+      );
+
+      if (raydiumTx) {
+        return res.json({ 
+          swapTransaction: raydiumTx, 
+          source: 'raydium' 
+        });
+      } else {
+        console.error('[SWAP] Raydium transaction build failed');
+        return res.status(500).json({ error: 'Failed to build Raydium transaction' });
+      }
+    }
+
+    // Standard Jupiter swap
+    console.log('[SWAP] Proxying to Jupiter swap API');
 
     // Build swap request with REQUIRED production flags
     const swapBody = {
