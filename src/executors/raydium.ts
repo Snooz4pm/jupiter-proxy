@@ -80,6 +80,18 @@ export class RaydiumExecutor implements SwapExecutor {
       const isInputSol = quote.inputMint === SOL_MINT;
       const isOutputSol = quote.outputMint === SOL_MINT;
 
+      // Extract the swap data - handle both structures
+      // _raw could be {id, success, data: {...}} OR just the data object directly
+      let swapData = quote._raw?.data || quote._raw;
+      
+      if (!swapData || !swapData.inputMint) {
+        console.error('[Raydium] Invalid _raw structure:', JSON.stringify(quote._raw).slice(0, 200));
+        return null;
+      }
+
+      console.log('[Raydium] Swap data inputMint:', swapData.inputMint);
+      console.log('[Raydium] Swap data outputMint:', swapData.outputMint);
+
       // Get priority fee
       let priorityFee = 100000;
       try {
@@ -94,12 +106,16 @@ export class RaydiumExecutor implements SwapExecutor {
 
       const requestBody = {
         computeUnitPriceMicroLamports: String(priorityFee),
-        swapResponse: quote._raw.data,
+        swapResponse: swapData,
         txVersion: 'V0',
         wallet: userPublicKey,
         wrapSol: isInputSol,
         unwrapSol: isOutputSol,
+        // Add inputAccount for non-SOL inputs (user needs ATA)
+        inputAccount: isInputSol ? undefined : undefined, // Raydium should auto-derive
       };
+
+      console.log('[Raydium] Request body:', JSON.stringify(requestBody).slice(0, 500));
 
       const response = await fetch(`${RAYDIUM_API}/transaction/swap-base-in`, {
         method: 'POST',
@@ -109,7 +125,7 @@ export class RaydiumExecutor implements SwapExecutor {
 
       if (!response.ok) {
         const errText = await response.text();
-        console.log('[Raydium] Swap failed:', response.status, errText);
+        console.log('[Raydium] Swap HTTP error:', response.status, errText);
         return null;
       }
 

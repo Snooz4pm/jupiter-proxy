@@ -5,7 +5,30 @@
 
 import { SwapExecutor, SwapParams, Quote, SwapResult } from './types';
 
-const JUPITER_API = 'https://quote-api.jup.ag/v6';
+// Use multiple Jupiter endpoints for redundancy
+const JUPITER_APIS = [
+  'https://quote-api.jup.ag/v6',
+  'https://api.jup.ag/swap/v1'  // Alternative endpoint
+];
+
+async function fetchJupiter(path: string, options?: RequestInit): Promise<Response | null> {
+  for (const baseUrl of JUPITER_APIS) {
+    try {
+      const url = `${baseUrl}${path}`;
+      console.log(`[Jupiter] Trying: ${url}`);
+      const response = await fetch(url, {
+        ...options,
+        signal: AbortSignal.timeout(10000) // 10s timeout
+      });
+      if (response.ok || response.status !== 0) {
+        return response;
+      }
+    } catch (err: any) {
+      console.log(`[Jupiter] ${baseUrl} failed:`, err.message || err);
+    }
+  }
+  return null;
+}
 
 export class JupiterExecutor implements SwapExecutor {
   name = 'jupiter';
@@ -20,17 +43,18 @@ export class JupiterExecutor implements SwapExecutor {
 
   async quote(params: SwapParams): Promise<Quote | null> {
     try {
-      const url = new URL(`${JUPITER_API}/quote`);
-      url.searchParams.set('inputMint', params.inputMint);
-      url.searchParams.set('outputMint', params.outputMint);
-      url.searchParams.set('amount', params.amount);
-      url.searchParams.set('slippageBps', String(params.slippageBps));
+      const queryParams = `?inputMint=${params.inputMint}&outputMint=${params.outputMint}&amount=${params.amount}&slippageBps=${params.slippageBps}`;
 
       console.log(`[Jupiter] Getting quote: ${params.inputMint} -> ${params.outputMint}`);
 
-      const response = await fetch(url.toString(), {
+      const response = await fetchJupiter(`/quote${queryParams}`, {
         headers: { 'Accept': 'application/json' }
       });
+
+      if (!response) {
+        console.log('[Jupiter] All endpoints failed');
+        return null;
+      }
 
       if (!response.ok) {
         if (response.status === 429) {
@@ -83,7 +107,7 @@ export class JupiterExecutor implements SwapExecutor {
         return null;
       }
 
-      const response = await fetch(`${JUPITER_API}/swap`, {
+      const response = await fetchJupiter('/swap', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -94,6 +118,11 @@ export class JupiterExecutor implements SwapExecutor {
           prioritizationFeeLamports: 'auto'
         })
       });
+
+      if (!response) {
+        console.log('[Jupiter] All swap endpoints failed');
+        return null;
+      }
 
       if (!response.ok) {
         const errText = await response.text();
