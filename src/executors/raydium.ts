@@ -80,8 +80,8 @@ export class RaydiumExecutor implements SwapExecutor {
       const isInputSol = quote.inputMint === SOL_MINT;
       const isOutputSol = quote.outputMint === SOL_MINT;
 
-      // The _raw should be the full Raydium response: {id, success, version, data: {...}}
-      // We need to pass the 'data' field to swapResponse
+      // The _raw is the full Raydium response: {id, success, version, data: {...}}
+      // We need the 'data' field which contains the FULL swap response
       const rawResponse = quote._raw;
       
       if (!rawResponse) {
@@ -89,19 +89,30 @@ export class RaydiumExecutor implements SwapExecutor {
         return null;
       }
 
-      // Handle both structures: full response {data: {...}} or just the data object
+      // Extract the FULL swapResponse data
       const swapResponseData = rawResponse.data || rawResponse;
       
-      console.log('[Raydium] Raw response keys:', Object.keys(rawResponse));
-      console.log('[Raydium] swapResponseData keys:', Object.keys(swapResponseData));
-      console.log('[Raydium] swapResponseData.routePlan exists:', !!swapResponseData.routePlan);
-      
-      // Validate required fields
-      if (!swapResponseData.inputMint || !swapResponseData.outputMint || !swapResponseData.routePlan) {
-        console.error('[Raydium] Missing required fields in swapResponseData');
-        console.error('[Raydium] Full swapResponseData:', JSON.stringify(swapResponseData).slice(0, 500));
+      // Validate we have the FULL response (not just mints)
+      if (!swapResponseData.routePlan || !swapResponseData.inputAmount || !swapResponseData.outputAmount) {
+        console.error('[Raydium] Incomplete swapResponse! Missing required fields.');
+        console.error('[Raydium] Has routePlan:', !!swapResponseData.routePlan);
+        console.error('[Raydium] Has inputAmount:', !!swapResponseData.inputAmount);
+        console.error('[Raydium] Has outputAmount:', !!swapResponseData.outputAmount);
+        console.error('[Raydium] Keys present:', Object.keys(swapResponseData));
         return null;
       }
+
+      // Guard: Raydium only supports single-hop swaps
+      const isSingleHop = swapResponseData.routePlan?.length === 1;
+      if (!isSingleHop) {
+        console.log('[Raydium] Multi-hop detected, Raydium only supports single-hop');
+        return null;
+      }
+
+      console.log('[Raydium] Full swapResponse validated:');
+      console.log('[Raydium]   inputAmount:', swapResponseData.inputAmount);
+      console.log('[Raydium]   outputAmount:', swapResponseData.outputAmount);
+      console.log('[Raydium]   routePlan length:', swapResponseData.routePlan?.length);
 
       // Get priority fee
       let priorityFee = 100000;
@@ -115,19 +126,17 @@ export class RaydiumExecutor implements SwapExecutor {
         // Use default
       }
 
+      // Build the request with the FULL swapResponse
       const requestBody = {
-        computeUnitPriceMicroLamports: String(priorityFee),
-        swapResponse: swapResponseData,
-        txVersion: 'V0',
+        swapResponse: swapResponseData, // 🔥 FULL OBJECT - not just mints!
         wallet: userPublicKey,
+        txVersion: 'V0',
+        computeUnitPriceMicroLamports: String(priorityFee),
         wrapSol: isInputSol,
         unwrapSol: isOutputSol,
       };
 
-      console.log('[Raydium] Request to transaction API:', JSON.stringify({
-        ...requestBody,
-        swapResponse: { inputMint: swapResponseData.inputMint, outputMint: swapResponseData.outputMint }
-      }));
+      console.log('[Raydium] Sending to transaction API...');
 
       const response = await fetch(`${RAYDIUM_API}/transaction/swap-base-in`, {
         method: 'POST',
@@ -137,18 +146,18 @@ export class RaydiumExecutor implements SwapExecutor {
 
       if (!response.ok) {
         const errText = await response.text();
-        console.log('[Raydium] Swap HTTP error:', response.status, errText);
+        console.log('[Raydium] HTTP error:', response.status, errText);
         return null;
       }
 
       const data = await response.json();
 
       if (!data.success || !data.data?.[0]?.transaction) {
-        console.log('[Raydium] No transaction returned:', JSON.stringify(data));
+        console.log('[Raydium] API returned error:', JSON.stringify(data));
         return null;
       }
 
-      console.log('[Raydium] Transaction built successfully');
+      console.log('[Raydium] ✓ Transaction built successfully');
       return {
         swapTransaction: data.data[0].transaction,
         source: 'raydium'
