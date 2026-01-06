@@ -1,27 +1,3 @@
-// ============================================
-// WALLET SNAPSHOT ENDPOINT (SOLANA DATA)
-// ============================================
-app.get('/api/wallet/:address', async (req, res) => {
-  try {
-    const pubkey = new PublicKey(req.params.address);
-    const [balance, tokenAccounts] = await Promise.all([
-      connection.getBalance(pubkey),
-      connection.getParsedTokenAccountsByOwner(pubkey, {
-        programId: TOKEN_PROGRAM_ID,
-      }),
-    ]);
-    res.json({
-      balanceLamports: balance,
-      tokens: tokenAccounts.value.map(v => ({
-        mint: v.account.data.parsed.info.mint,
-        amount: v.account.data.parsed.info.tokenAmount.uiAmount,
-        decimals: v.account.data.parsed.info.tokenAmount.decimals,
-      })),
-    });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch wallet snapshot', details: String(err) });
-  }
-});
 // ...existing code...
 import express from 'express';
 import cors from 'cors';
