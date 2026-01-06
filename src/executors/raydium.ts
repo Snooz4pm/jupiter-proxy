@@ -80,17 +80,20 @@ export class RaydiumExecutor implements SwapExecutor {
       const isInputSol = quote.inputMint === SOL_MINT;
       const isOutputSol = quote.outputMint === SOL_MINT;
 
-      // Extract the swap data - handle both structures
-      // _raw could be {id, success, data: {...}} OR just the data object directly
-      let swapData = quote._raw?.data || quote._raw;
+      // The _raw should be the full Raydium response: {id, success, version, data: {...}}
+      // We need to pass the 'data' field to swapResponse
+      const rawResponse = quote._raw;
       
-      if (!swapData || !swapData.inputMint) {
-        console.error('[Raydium] Invalid _raw structure:', JSON.stringify(quote._raw).slice(0, 200));
+      if (!rawResponse) {
+        console.error('[Raydium] Missing _raw data');
         return null;
       }
 
-      console.log('[Raydium] Swap data inputMint:', swapData.inputMint);
-      console.log('[Raydium] Swap data outputMint:', swapData.outputMint);
+      // Handle both structures: full response {data: {...}} or just the data object
+      const swapResponseData = rawResponse.data || rawResponse;
+      
+      console.log('[Raydium] Raw response keys:', Object.keys(rawResponse));
+      console.log('[Raydium] SwapResponse has inputMint:', !!swapResponseData.inputMint);
 
       // Get priority fee
       let priorityFee = 100000;
@@ -106,16 +109,17 @@ export class RaydiumExecutor implements SwapExecutor {
 
       const requestBody = {
         computeUnitPriceMicroLamports: String(priorityFee),
-        swapResponse: swapData,
+        swapResponse: swapResponseData,
         txVersion: 'V0',
         wallet: userPublicKey,
         wrapSol: isInputSol,
         unwrapSol: isOutputSol,
-        // Add inputAccount for non-SOL inputs (user needs ATA)
-        inputAccount: isInputSol ? undefined : undefined, // Raydium should auto-derive
       };
 
-      console.log('[Raydium] Request body:', JSON.stringify(requestBody).slice(0, 500));
+      console.log('[Raydium] Request to transaction API:', JSON.stringify({
+        ...requestBody,
+        swapResponse: { inputMint: swapResponseData.inputMint, outputMint: swapResponseData.outputMint }
+      }));
 
       const response = await fetch(`${RAYDIUM_API}/transaction/swap-base-in`, {
         method: 'POST',

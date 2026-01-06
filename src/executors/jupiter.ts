@@ -6,25 +6,47 @@
 import { SwapExecutor, SwapParams, Quote, SwapResult } from './types';
 
 // Use multiple Jupiter endpoints for redundancy
+// Note: quote-api.jup.ag sometimes has DNS issues on Railway
 const JUPITER_APIS = [
-  'https://quote-api.jup.ag/v6',
-  'https://api.jup.ag/swap/v1'  // Alternative endpoint
+  'https://api.jup.ag/swap/v1',      // New unified API
+  'https://quote-api.jup.ag/v6',     // Legacy API
+  'https://lite-api.jup.ag/swap/v1'  // Lite API
 ];
 
 async function fetchJupiter(path: string, options?: RequestInit): Promise<Response | null> {
   for (const baseUrl of JUPITER_APIS) {
     try {
-      const url = `${baseUrl}${path}`;
+      // Adjust path based on API version
+      let url = baseUrl;
+      if (path.startsWith('/quote')) {
+        url = `${baseUrl}${path}`;
+      } else if (path === '/swap') {
+        url = `${baseUrl}${path}`;
+      } else {
+        url = `${baseUrl}${path}`;
+      }
+      
       console.log(`[Jupiter] Trying: ${url}`);
       const response = await fetch(url, {
         ...options,
         signal: AbortSignal.timeout(10000) // 10s timeout
       });
-      if (response.ok || response.status !== 0) {
+      
+      if (response.ok) {
+        console.log(`[Jupiter] Success from ${baseUrl}`);
         return response;
       }
+      
+      if (response.status === 429) {
+        console.log(`[Jupiter] ${baseUrl} rate limited`);
+        continue;
+      }
+      
+      // Return non-OK response if it's not a connection error
+      console.log(`[Jupiter] ${baseUrl} returned ${response.status}`);
+      return response;
     } catch (err: any) {
-      console.log(`[Jupiter] ${baseUrl} failed:`, err.message || err);
+      console.log(`[Jupiter] ${baseUrl} failed:`, err.code || err.message);
     }
   }
   return null;

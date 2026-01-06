@@ -542,9 +542,11 @@ async function runMoverScan() {
   }
 }
 
-// Start Background Job (Every 60s)
-setInterval(runMoverScan, 60_000);
-runMoverScan(); // Run once immediately
+// Start Background Job (Disabled - causing 429 floods)
+// TODO: Re-enable when we have proper RPC with higher limits
+// setInterval(runMoverScan, 60_000);
+// runMoverScan();
+console.log('[MOVERS] Scan disabled to prevent 429 floods');
 
 app.get('/market-movers', (req, res) => {
   res.json({
