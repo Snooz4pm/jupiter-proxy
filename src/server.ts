@@ -1,7 +1,23 @@
 import express from 'express';
 import cors from 'cors';
+import { Server } from 'socket.io';
+import http from 'http';
 
 const app = express();
+const server = http.createServer(app);
+
+// Initialize Socket.IO
+const io = new Server(server, {
+  cors: {
+    origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000', 'https://zenithscores.com', 'https://www.zenithscores.com'],
+    methods: ["GET", "POST"]
+  }
+});
+
+io.on('connection', (socket) => {
+  console.log('[SOCKET] Client connected:', socket.id);
+  socket.on('disconnect', () => console.log('[SOCKET] Client disconnected:', socket.id));
+});
 
 // 🔥 FORCE CORS HEADERS (FIRST) - Nuclear Fix
 app.use((req, res, next) => {
@@ -242,6 +258,21 @@ async function runMoverScan() {
 
       const existing = sessionMovers.get(signer) || { volume24hUsd: 0, netFlow24hUsd: 0, txCount: 0 };
 
+      // SHADOW TRADE EMISSION (Real-time feed)
+      if (approxUsdValue > 500) { // Threshold for "Shadow Trade"
+        const isBuy = solChange < 0; // Negative SOL change = Spent SOL = Buy (approx)
+
+        io.emit('shadow-trade', {
+          type: isBuy ? 'BUY' : 'SELL',
+          pair: isBuy ? 'SOL -> Token' : 'Token -> SOL', // Naive pair guess for MVP
+          amountUsd: approxUsdValue,
+          time: tx.blockTime ? tx.blockTime * 1000 : Date.now(),
+          signature: tx.transaction.signatures[0],
+          symbol: 'Unknown', // Enriched later if possible
+          badges: approxUsdValue > 5000 ? ['High Impact'] : []
+        });
+      }
+
       sessionMovers.set(signer, {
         volume24hUsd: (existing.volume24hUsd || 0) + approxUsdValue,
         netFlow24hUsd: (existing.netFlow24hUsd || 0) + (solChange * 150),
@@ -320,7 +351,7 @@ app.get('/market-movers', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Jupiter Proxy running on port ${PORT}`);
-  console.log(`� CORS enabled for: ${allowedOrigins.join(', ')}`);
+server.listen(PORT, () => {
+  console.log(`🚀 Jupiter Proxy (HTTP + Socket) running on port ${PORT}`);
+  console.log(`⚠️ CORS enabled for: ${allowedOrigins.join(', ')}`);
 });
