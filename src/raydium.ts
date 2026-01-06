@@ -82,40 +82,49 @@ export async function getRaydiumSwapTransaction(
     const isInputSol = inputMint === SOL_MINT;
     const isOutputSol = outputMint === SOL_MINT;
 
+    console.log('[Raydium] Building tx for wallet:', walletPubkey);
+    console.log('[Raydium] isInputSol:', isInputSol, 'isOutputSol:', isOutputSol);
+
     // Get priority fee
-    let priorityFee = '100000'; // default 0.0001 SOL
+    let priorityFee = 100000; // default 0.0001 SOL in micro lamports
     try {
-      const feeRes = await fetch(`${RAYDIUM_API.replace('transaction-v1', 'api-v3')}/main/auto-fee`);
+      const feeRes = await fetch('https://api-v3.raydium.io/main/auto-fee');
       if (feeRes.ok) {
         const feeData = await feeRes.json();
-        priorityFee = String(feeData?.data?.default?.h || 100000);
+        priorityFee = Number(feeData?.data?.default?.h || 100000);
+        console.log('[Raydium] Using priority fee:', priorityFee);
       }
     } catch {
       console.log('[Raydium] Using default priority fee');
     }
 
+    const requestBody = {
+      computeUnitPriceMicroLamports: String(priorityFee),
+      swapResponse: swapResponse.data,
+      txVersion: 'V0',
+      wallet: walletPubkey,
+      wrapSol: isInputSol,
+      unwrapSol: isOutputSol,
+    };
+
+    console.log('[Raydium] Tx request body:', JSON.stringify(requestBody, null, 2));
+
     const response = await fetch(`${RAYDIUM_API}/transaction/swap-base-in`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        computeUnitPriceMicroLamports: priorityFee,
-        swapResponse: swapResponse.data,
-        txVersion: 'V0',
-        wallet: walletPubkey,
-        wrapSol: isInputSol,
-        unwrapSol: isOutputSol,
-      })
+      body: JSON.stringify(requestBody)
     });
 
     if (!response.ok) {
-      console.log('[Raydium] Swap tx build failed:', response.status);
+      const errorText = await response.text();
+      console.log('[Raydium] Swap tx build failed:', response.status, errorText);
       return null;
     }
 
     const data: RaydiumSwapResponse = await response.json();
     
     if (!data.success || !data.data?.[0]?.transaction) {
-      console.log('[Raydium] No transaction returned');
+      console.log('[Raydium] No transaction returned:', JSON.stringify(data));
       return null;
     }
 

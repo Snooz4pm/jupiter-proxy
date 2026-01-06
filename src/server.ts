@@ -133,9 +133,9 @@ app.get('/tokens', async (req, res) => {
   }
 });
 
-import { getRaydiumQuote, getRaydiumSwapTransaction } from './raydium';
+import { getBestQuote, executeSwap, getAllQuotes } from './executors';
 
-// Simple retry helper for rate limits
+// Simple retry helper for rate limits (kept for other uses)
 async function fetchWithRetry(url: string, options: RequestInit = {}, maxRetries = 2): Promise<Response | null> {
   for (let i = 0; i <= maxRetries; i++) {
     try {
@@ -159,7 +159,10 @@ async function fetchWithRetry(url: string, options: RequestInit = {}, maxRetries
   return null;
 }
 
-// Jupiter Quote Proxy (with Raydium fallback)
+// ============================================
+// SMART QUOTE ENDPOINT (Multi-DEX Router)
+// ============================================
+// Priority: Jupiter -> Raydium -> Orca -> Phoenix -> OpenBook
 app.get('/quote', async (req, res) => {
   try {
     const { inputMint, outputMint, amount, slippageBps } = req.query as any;
@@ -177,129 +180,91 @@ app.get('/quote', async (req, res) => {
       return res.status(400).json({ error: 'INVALID_AMOUNT', message: 'Invalid amount' });
     }
 
-    const queryParams = new URLSearchParams(req.query as any).toString();
-    const jupiterUrl = `${JUPITER_API}/quote?${queryParams}`;
+    console.log(`[QUOTE] Smart routing: ${inputMint} -> ${outputMint}, amount: ${amount}`);
 
-    console.log('[QUOTE] Trying Jupiter:', jupiterUrl);
-
-    const response = await fetchWithRetry(jupiterUrl, {
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'ZenithScores/1.0'
-      }
-    });
-
-    // Jupiter success
-    if (response && response.ok) {
-      const data = await response.json();
-      
-      if (data && data.routePlan && data.routePlan.length > 0) {
-        console.log('[QUOTE] Jupiter route found');
-        return res.json({ ...data, source: 'jupiter' });
-      }
-    }
-
-    // Jupiter failed, rate limited, or no route — try Raydium Trade API
-    console.log('[QUOTE] Jupiter unavailable, trying Raydium Trade API...');
-
-    const raydiumQuoteRes = await getRaydiumQuote(
+    // Use smart router (tries Jupiter -> Raydium -> Orca -> Phoenix -> OpenBook)
+    const quote = await getBestQuote({
       inputMint,
       outputMint,
       amount,
-      Number(slippageBps) || 50
-    );
+      slippageBps: Number(slippageBps) || 50
+    });
 
-    if (raydiumQuoteRes && raydiumQuoteRes.success && raydiumQuoteRes.data) {
-      console.log('[QUOTE] Raydium route found, output:', raydiumQuoteRes.data.outputAmount);
-      return res.json({
-        source: 'raydium',
-        inputMint,
-        outputMint,
-        inAmount: raydiumQuoteRes.data.inputAmount,
-        outAmount: raydiumQuoteRes.data.outputAmount,
-        priceImpactPct: String(raydiumQuoteRes.data.priceImpactPct || 0),
-        slippageBps: raydiumQuoteRes.data.slippageBps,
-        routePlan: raydiumQuoteRes.data.routePlan || [{ source: 'raydium' }],
-        // Store full response for swap endpoint
-        _raydiumQuote: raydiumQuoteRes
-      });
+    if (quote) {
+      console.log(`[QUOTE] ✓ Route found via ${quote.source}, output: ${quote.outAmount}`);
+      return res.json(quote);
     }
 
-    // No route anywhere
-    console.log('[QUOTE] No route found (Jupiter + Raydium)');
+    // No route found across all DEXs
+    console.log('[QUOTE] ✗ No route found across all DEXs');
     return res.status(200).json({
       routePlan: [],
       error: 'NO_ROUTE',
-      message: 'No liquidity route available for this pair'
+      message: 'Liquidity too thin for this amount'
     });
 
   } catch (error) {
     console.error('[QUOTE] Error:', error);
-    // Network/system errors are still 500
     res.status(500).json({ error: 'Quote fetch failed', routePlan: [] });
   }
 });
 
-// Jupiter Swap Proxy (with Raydium fallback)
+// ============================================
+// COMPARE QUOTES ENDPOINT (Shows all DEX prices)
+// ============================================
+app.get('/quote/compare', async (req, res) => {
+  try {
+    const { inputMint, outputMint, amount, slippageBps } = req.query as any;
+
+    if (!inputMint || !outputMint || !amount) {
+      return res.status(400).json({ error: 'Missing required parameters' });
+    }
+
+    console.log(`[COMPARE] Getting all quotes for ${inputMint} -> ${outputMint}`);
+
+    const quotes = await getAllQuotes({
+      inputMint,
+      outputMint,
+      amount,
+      slippageBps: Number(slippageBps) || 50
+    });
+
+    return res.json({
+      quotes,
+      best: quotes[0] || null,
+      count: quotes.length
+    });
+
+  } catch (error) {
+    console.error('[COMPARE] Error:', error);
+    res.status(500).json({ error: 'Compare quotes failed' });
+  }
+});
+
+// ============================================
+// SMART SWAP ENDPOINT (Multi-DEX Router)
+// ============================================
 app.post('/swap', async (req, res) => {
   try {
     const { quoteResponse, userPublicKey } = req.body;
 
-    // Check if this is a Raydium quote (has _raydiumQuote marker)
-    if (quoteResponse?._raydiumQuote) {
-      console.log('[SWAP] Using Raydium Trade API for transaction');
-      
-      const raydiumTx = await getRaydiumSwapTransaction(
-        quoteResponse._raydiumQuote,
-        userPublicKey,
-        quoteResponse.inputMint,
-        quoteResponse.outputMint
-      );
-
-      if (raydiumTx) {
-        return res.json({ 
-          swapTransaction: raydiumTx, 
-          source: 'raydium' 
-        });
-      } else {
-        console.error('[SWAP] Raydium transaction build failed');
-        return res.status(500).json({ error: 'Failed to build Raydium transaction' });
-      }
+    if (!quoteResponse || !userPublicKey) {
+      return res.status(400).json({ error: 'Missing quoteResponse or userPublicKey' });
     }
 
-    // Standard Jupiter swap
-    console.log('[SWAP] Proxying to Jupiter swap API');
+    console.log(`[SWAP] Building transaction via ${quoteResponse.source || 'unknown'}`);
 
-    // Build swap request with REQUIRED production flags
-    const swapBody = {
-      ...req.body,
-      // CRITICAL FLAGS FOR PRODUCTION:
-      wrapAndUnwrapSol: true,           // Handles SOL ↔ wSOL automatically
-      dynamicComputeUnitLimit: true,     // Prevents CU exhaustion
-      prioritizationFeeLamports: 'auto', // Auto priority fees for faster inclusion
-    };
+    // Use the smart router to execute the swap
+    const result = await executeSwap(quoteResponse, userPublicKey);
 
-    const response = await fetchWithRetry(`${JUPITER_API}/swap`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(swapBody)
-    });
-
-    if (!response) {
-      console.error('[SWAP] Jupiter API unavailable (rate limited)');
-      return res.status(503).json({ error: 'Jupiter API unavailable, try again' });
+    if (result) {
+      console.log(`[SWAP] ✓ Transaction built via ${result.source}`);
+      return res.json(result);
     }
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('[SWAP] Jupiter API error:', response.status, errorText);
-      return res.status(response.status).json({ error: errorText });
-    }
+    console.error('[SWAP] ✗ Failed to build transaction');
+    return res.status(500).json({ error: 'Failed to build swap transaction' });
 
-    const data = await response.json();
-    res.json(data);
   } catch (error) {
     console.error('[SWAP] Error:', error);
     res.status(500).json({ error: 'Swap request failed' });
