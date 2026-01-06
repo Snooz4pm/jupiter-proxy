@@ -12,15 +12,19 @@ const PORT = process.env.PORT || 3001;
 // ============================================
 // JUPITER FAILOVER ENDPOINTS (DNS HARDENING)
 // ============================================
+// Using new Metis API (v1) - v6 is deprecated
 const JUPITER_QUOTE_ENDPOINTS = [
-  'https://quote-api.jup.ag/v6/quote',
-  'https://public.jupiterapi.com/quote',
+  'https://api.jup.ag/swap/v1/quote',
+  'https://quote-api.jup.ag/v6/quote', // fallback to v6
 ];
 
 const JUPITER_SWAP_ENDPOINTS = [
-  'https://quote-api.jup.ag/v6/swap',
-  'https://public.jupiterapi.com/swap',
+  'https://api.jup.ag/swap/v1/swap',
+  'https://quote-api.jup.ag/v6/swap', // fallback to v6
 ];
+
+// Jupiter API Key (enables higher fee limits)
+const JUPITER_API_KEY = process.env.JUPITER_API_KEY || '9734e999-cc55-46e5-ba68-f7def92483aa';
 
 // ============================================
 // PLATFORM FEE CONFIGURATION (REVENUE)
@@ -89,6 +93,7 @@ async function fetchWithFailover(
         headers: {
           'Content-Type': 'application/json',
           'User-Agent': 'ZenithScores/1.0',
+          'x-api-key': JUPITER_API_KEY, // Required for fee collection
           ...(options.headers || {}),
         },
       });
