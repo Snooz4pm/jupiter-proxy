@@ -136,22 +136,27 @@ app.get('/tokens', async (req, res) => {
 import { getRaydiumPool, raydiumQuote, hasMinimumLiquidity } from './raydium';
 
 // Simple retry helper for rate limits
-async function fetchWithRetry(url: string, options: RequestInit = {}, maxRetries = 2): Promise<Response> {
+async function fetchWithRetry(url: string, options: RequestInit = {}, maxRetries = 2): Promise<Response | null> {
   for (let i = 0; i <= maxRetries; i++) {
-    const response = await fetch(url, options);
-    
-    if (response.status === 429) {
-      if (i < maxRetries) {
-        const delay = Math.pow(2, i) * 1000; // 1s, 2s
-        console.log(`[RETRY] 429 received, waiting ${delay}ms...`);
-        await new Promise(r => setTimeout(r, delay));
-        continue;
+    try {
+      const response = await fetch(url, options);
+      
+      if (response.status === 429) {
+        if (i < maxRetries) {
+          const delay = Math.pow(2, i) * 1000; // 1s, 2s
+          console.log(`[RETRY] 429 received, waiting ${delay}ms...`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
       }
+      
+      return response;
+    } catch (err) {
+      console.error(`[RETRY] Fetch error on attempt ${i + 1}:`, err);
+      if (i === maxRetries) return null;
     }
-    
-    return response;
   }
-  throw new Error('Max retries exceeded');
+  return null;
 }
 
 // Jupiter Quote Proxy (with Raydium fallback)
@@ -185,7 +190,7 @@ app.get('/quote', async (req, res) => {
     });
 
     // Jupiter success
-    if (response.ok) {
+    if (response && response.ok) {
       const data = await response.json();
       
       if (data && data.routePlan && data.routePlan.length > 0) {
@@ -194,10 +199,15 @@ app.get('/quote', async (req, res) => {
       }
     }
 
-    // Jupiter failed or no route — try Raydium fallback
-    console.log('[QUOTE] Jupiter NO_ROUTE, trying Raydium fallback...');
+    // Jupiter failed, rate limited, or no route — try Raydium fallback
+    console.log('[QUOTE] Jupiter unavailable or NO_ROUTE, trying Raydium fallback...');
 
-    const pool = await getRaydiumPool(inputMint, outputMint);
+    let pool = null;
+    try {
+      pool = await getRaydiumPool(inputMint, outputMint);
+    } catch (e) {
+      console.log('[QUOTE] Raydium pool fetch failed:', e);
+    }
     
     if (pool && hasMinimumLiquidity(pool)) {
       const amountIn = BigInt(amount);
@@ -254,6 +264,11 @@ app.post('/swap', async (req, res) => {
       },
       body: JSON.stringify(swapBody)
     });
+
+    if (!response) {
+      console.error('[SWAP] Jupiter API unavailable (rate limited)');
+      return res.status(503).json({ error: 'Jupiter API unavailable, try again' });
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
