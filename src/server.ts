@@ -78,82 +78,52 @@ function backendSanityFilter(token: any) {
 // ============================================
 app.get('/tokens', async (req, res) => {
   try {
-    console.log('[TOKENS] Fetching Jupiter token list...');
+    console.log('[TOKENS] Fetching Jupiter strict + all token lists...');
 
-    // Try Jupiter /all endpoint
-    const jupiterRes = await fetch('https://token.jup.ag/all', {
-      headers: { 'User-Agent': 'ZenithScores/1.0' },
-      signal: AbortSignal.timeout(8000)
-    });
+    // Primary: Fetch both strict (verified) and all (full)
+    const [strictRes, allRes] = await Promise.all([
+      fetch('https://token.jup.ag/strict', { signal: AbortSignal.timeout(10000) }),
+      fetch('https://token.jup.ag/all', { signal: AbortSignal.timeout(10000) })
+    ]);
 
-    if (!jupiterRes.ok) {
-      throw new Error(`Jupiter API returned ${jupiterRes.status}`);
+    if (!strictRes.ok || !allRes.ok) {
+      throw new Error(`Jupiter API error: strict ${strictRes.status}, all ${allRes.status}`);
     }
 
-    const tokens = await jupiterRes.json();
-    console.log(`[TOKENS] Successfully fetched ${tokens.length} tokens from Jupiter`);
+    const strictTokens = await strictRes.json();
+    const allTokens = await allRes.json();
 
-    // Return ALL tokens (Frontend handles slicing/filtering)
+    // Combine: Use strict as base, add extras from all (dedupe)
+    const tokenMap = new Map();
+    [...strictTokens, ...allTokens].forEach(t => {
+      if (!t.address) return;
+      const addr = t.address.toLowerCase();
+      if (!tokenMap.has(addr)) {
+        tokenMap.set(addr, t);
+      }
+    });
+
+    const tokens = Array.from(tokenMap.values());
+
+    console.log(`[TOKENS] Successfully fetched ${tokens.length} tokens from Jupiter (strict + all)`);
+
     return res.json({
-      source: 'jupiter',
+      source: 'jupiter-ecosystem',
       count: tokens.length,
-      tokens: tokens
+      tokens: tokens  // Frontend can filter/slice as needed
     });
 
   } catch (jupiterError: any) {
-    console.error('[TOKENS] Jupiter failed, switching to Broad DexScreener Fallback:', jupiterError.message);
+    console.error('[TOKENS] Jupiter failed:', jupiterError.message);
 
-    try {
-      // FIX: Use PAIRS endpoint instead of SEARCH for broader coverage
-      const dexRes = await fetch('https://api.dexscreener.com/latest/dex/pairs/solana', {
-        headers: { 'User-Agent': 'ZenithScores/1.0' }
-      });
-
-      if (!dexRes.ok) throw new Error('DexScreener fetch failed');
-
-      const dexData: any = await dexRes.json();
-
-      if (dexData.pairs && dexData.pairs.length > 0) {
-        console.log(`[TOKENS] DexScreener returned ${dexData.pairs.length} pairs`);
-
-        // Transform to standard format
-        const rawTokens = dexData.pairs.map((pair: any) => ({
-          address: pair.baseToken?.address,
-          symbol: pair.baseToken?.symbol || 'UNKNOWN',
-          name: pair.baseToken?.name || 'Unknown Token',
-          decimals: 9,
-          logoURI: pair.info?.imageUrl || null,
-          tags: ['dexscreener'],
-          priceUsd: Number(pair.priceUsd) || 0,
-          liquidity: Number(pair.liquidity?.usd) || 0,
-          volume24h: Number(pair.volume?.h24) || 0,
-          priceChange24h: Number(pair.priceChange?.h24) || 0,
-          dex: pair.dexId
-        }))
-          .filter(backendSanityFilter);
-
-        // Deduplicate
-        const deduped = dedupeByAddress(rawTokens);
-        console.log(`[TOKENS] Returning ${deduped.length} clean, unique tokens`);
-
-        return res.json({
-          source: 'dexscreener',
-          count: deduped.length,
-          tokens: deduped
-        });
-      }
-
-      throw new Error('DexScreener returned no data');
-
-    } catch (fallbackError: any) {
-      console.error('[TOKENS] All sources failed:', fallbackError.message);
-      return res.status(503).json({
-        source: 'none',
-        count: 0,
-        tokens: [],
-        error: 'Token data sources temporarily unavailable'
-      });
-    }
+    // OPTIONAL: Remove or replace DexScreener fallback entirely
+    // It's unreliable for "all tokens". If you want a backup, use Birdeye or cache last good list.
+    return res.status(503).json({
+      source: 'none',
+      count: 0,
+      tokens: [],
+      error: 'Token data sources temporarily unavailable – retrying soon'
+    });
   }
 });
 
