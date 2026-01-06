@@ -161,19 +161,117 @@ app.post('/swap', async (req, res) => {
   try {
     console.log('[SWAP] Proxying swap transaction');
 
+    // Build swap request with REQUIRED production flags
+    const swapBody = {
+      ...req.body,
+      // CRITICAL FLAGS FOR PRODUCTION:
+      wrapAndUnwrapSol: true,           // Handles SOL ↔ wSOL automatically
+      dynamicComputeUnitLimit: true,     // Prevents CU exhaustion
+      prioritizationFeeLamports: 'auto', // Auto priority fees for faster inclusion
+    };
+
     const response = await fetch(`${JUPITER_API}/swap`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(req.body)
+      body: JSON.stringify(swapBody)
     });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[SWAP] Jupiter API error:', response.status, errorText);
+      return res.status(response.status).json({ error: errorText });
+    }
 
     const data = await response.json();
     res.json(data);
   } catch (error) {
     console.error('[SWAP] Error:', error);
     res.status(500).json({ error: 'Swap request failed' });
+  }
+});
+
+// ============================================
+// JITO BUNDLE SUBMISSION (MEV PROTECTION)
+// ============================================
+
+const JITO_BLOCK_ENGINE = 'https://mainnet.block-engine.jito.wtf/api/v1/bundles';
+
+app.post('/jito-bundle', async (req, res) => {
+  try {
+    const { signedTransaction } = req.body;
+    
+    if (!signedTransaction) {
+      return res.status(400).json({ error: 'Missing signedTransaction' });
+    }
+
+    console.log('[JITO] Submitting bundle to Jito Block Engine...');
+
+    // Convert base64 to base58 for Jito
+    const bs58 = require('bs58');
+    const txBuffer = Buffer.from(signedTransaction, 'base64');
+    const txBase58 = bs58.encode(txBuffer);
+
+    const response = await fetch(JITO_BLOCK_ENGINE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'sendBundle',
+        params: [[txBase58]]
+      })
+    });
+
+    const result = await response.json();
+
+    if (result.error) {
+      console.error('[JITO] Bundle error:', result.error);
+      return res.status(400).json({ 
+        success: false, 
+        error: result.error.message || 'Bundle submission failed' 
+      });
+    }
+
+    console.log('[JITO] Bundle submitted:', result.result);
+    res.json({ 
+      success: true, 
+      bundleId: result.result 
+    });
+
+  } catch (error: any) {
+    console.error('[JITO] Error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error?.message || 'Jito submission failed' 
+    });
+  }
+});
+
+// Get Jito bundle status
+app.get('/jito-status/:bundleId', async (req, res) => {
+  try {
+    const { bundleId } = req.params;
+
+    const response = await fetch(JITO_BLOCK_ENGINE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getBundleStatuses',
+        params: [[bundleId]]
+      })
+    });
+
+    const result = await response.json();
+    const status = result?.result?.value?.[0]?.confirmation_status || 'unknown';
+    
+    res.json({ bundleId, status });
+
+  } catch (error) {
+    res.json({ bundleId: req.params.bundleId, status: 'unknown' });
   }
 });
 
