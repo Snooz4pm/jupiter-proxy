@@ -76,7 +76,7 @@ const NATIVE_SOL_MINT = new PublicKey('So111111111111111111111111111111111111111
 function getFeeTokenAccount(outputMint: string): string {
   try {
     const mintPubkey = new PublicKey(outputMint);
-    
+
     // For native SOL, use wrapped SOL (WSOL) ATA
     const ata = getAssociatedTokenAddressSync(
       mintPubkey,
@@ -85,7 +85,7 @@ function getFeeTokenAccount(outputMint: string): string {
       TOKEN_PROGRAM_ID,
       ASSOCIATED_TOKEN_PROGRAM_ID
     );
-    
+
     return ata.toBase58();
   } catch (err) {
     console.error('[FEE] Error computing ATA:', err);
@@ -139,10 +139,10 @@ async function fetchWithFailover(
       }
 
       console.log(`[Jupiter] ${res.status} from ${new URL(url).hostname}`);
-      
+
       // Rate limit - try next
       if (res.status === 429) continue;
-      
+
       // Other errors - return for caller to handle
       return res;
     } catch (err: any) {
@@ -196,9 +196,9 @@ app.use(express.json());
 // HEALTH CHECK
 // ============================================
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    service: 'jupiter-proxy', 
+  res.json({
+    status: 'ok',
+    service: 'jupiter-proxy',
     mode: 'jupiter-only',
     platformFee: `${PLATFORM_FEE_BPS / 100}%`,
     feeWallet: FEE_WALLET.toBase58().slice(0, 8) + '...'
@@ -210,7 +210,7 @@ app.get('/health', (req, res) => {
 // ============================================
 app.get('/fee-info', (req, res) => {
   const { mint } = req.query as { mint?: string };
-  
+
   // Common tokens ATAs
   const commonMints = [
     { symbol: 'USDC', mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' },
@@ -220,12 +220,12 @@ app.get('/fee-info', (req, res) => {
     { symbol: 'JLP', mint: '27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4' },
     { symbol: 'BONK', mint: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263' },
   ];
-  
+
   const accounts = commonMints.map(t => ({
     ...t,
     feeATA: getFeeTokenAccount(t.mint)
   }));
-  
+
   // If specific mint requested
   let requestedATA = null;
   if (mint) {
@@ -234,7 +234,7 @@ app.get('/fee-info', (req, res) => {
       feeATA: getFeeTokenAccount(mint)
     };
   }
-  
+
   res.json({
     feeWallet: FEE_WALLET.toBase58(),
     platformFeeBps: PLATFORM_FEE_BPS,
@@ -280,7 +280,8 @@ function dedupeByAddress(tokens: any[]) {
 }
 
 function backendSanityFilter(token: any) {
-  return token.address && token.symbol && token.name && token.logoURI && token.symbol.length <= 10;
+  // Relaxed for 'all' list: Logo not strictly required, symbol can be longer
+  return token.address && token.symbol && token.name;
 }
 
 app.get('/tokens', async (req, res) => {
@@ -295,9 +296,9 @@ app.get('/tokens', async (req, res) => {
       });
     }
 
-    console.log('[TOKENS] Fetching Jupiter strict tokens...');
+    console.log('[TOKENS] Fetching ALL Jupiter tokens...');
 
-    const response = await fetch('https://cache.jup.ag/strict-tokens', {
+    const response = await fetch('https://token.jup.ag/all', {
       signal: AbortSignal.timeout(15000),
       headers: { 'User-Agent': 'ZenithScores/1.0' }
     });
@@ -320,7 +321,7 @@ app.get('/tokens', async (req, res) => {
     });
   } catch (error: any) {
     console.error('[TOKENS] Failed:', error.message);
-    
+
     // Return cached tokens as fallback
     if (getCachedTokens().length > 0) {
       return res.json({
@@ -329,7 +330,7 @@ app.get('/tokens', async (req, res) => {
         tokens: getCachedTokens()
       });
     }
-    
+
     return res.status(503).json({ source: 'none', count: 0, tokens: [], error: 'Token fetch failed' });
   }
 });
@@ -352,23 +353,23 @@ app.get('/quote', async (req, res) => {
       return res.status(400).json({ error: 'INVALID_AMOUNT', message: 'Invalid amount' });
     }
 
-    console.log(`[QUOTE] ${inputMint.slice(0,8)}... -> ${outputMint.slice(0,8)}..., amount: ${amount}`);
+    console.log(`[QUOTE] ${inputMint.slice(0, 8)}... -> ${outputMint.slice(0, 8)}..., amount: ${amount}`);
 
     // Check cache
     const key = cacheKey({ inputMint, outputMint, amount, slippageBps });
     const now = Date.now();
     const cached = quoteCache.get(key);
-    
+
     if (cached && cached.expires > now) {
       console.log('[QUOTE] ✓ Cache hit');
       return res.json(cached.data);
     }
 
     // Build URLs for failover (include platform fee)
-    const params = new URLSearchParams({ 
-      inputMint, 
-      outputMint, 
-      amount, 
+    const params = new URLSearchParams({
+      inputMint,
+      outputMint,
+      amount,
       slippageBps,
       platformFeeBps: PLATFORM_FEE_BPS.toString()
     });
@@ -421,9 +422,9 @@ app.post('/swap', async (req, res) => {
     // Get the output mint from the quote to compute fee ATA
     const outputMint = quoteResponse.outputMint;
     const feeTokenAccount = getFeeTokenAccount(outputMint);
-    
-    console.log(`[SWAP] Building tx for ${userPublicKey.slice(0,8)}...`);
-    console.log(`[SWAP] Fee: ${PLATFORM_FEE_BPS}bps -> ATA: ${feeTokenAccount.slice(0,8)}... (mint: ${outputMint.slice(0,8)}...)`);
+
+    console.log(`[SWAP] Building tx for ${userPublicKey.slice(0, 8)}...`);
+    console.log(`[SWAP] Fee: ${PLATFORM_FEE_BPS}bps -> ATA: ${feeTokenAccount.slice(0, 8)}... (mint: ${outputMint.slice(0, 8)}...)`);
 
     // Build swap payload with fee collection
     const swapPayload: any = {
@@ -433,7 +434,7 @@ app.post('/swap', async (req, res) => {
       dynamicComputeUnitLimit: true,
       prioritizationFeeLamports: 'auto',
     };
-    
+
     // Only add feeAccount if we have a valid ATA
     // Note: The ATA must exist on-chain for fee collection to work
     if (feeTokenAccount) {
@@ -598,7 +599,7 @@ const tokenInfoCache = new Map<string, { symbol: string; logoURI?: string; decim
 
 async function getTokenInfo(mint: string): Promise<{ symbol: string; logoURI?: string; decimals: number } | null> {
   if (tokenInfoCache.has(mint)) return tokenInfoCache.get(mint)!;
-  
+
   // Try to find in our cached token list
   const cachedTokens = getCachedTokens();
   const found = cachedTokens.find((t: any) => t.address === mint);
@@ -607,7 +608,7 @@ async function getTokenInfo(mint: string): Promise<{ symbol: string; logoURI?: s
     tokenInfoCache.set(mint, info);
     return info;
   }
-  
+
   return null;
 }
 
@@ -615,29 +616,29 @@ async function getTokenInfo(mint: string): Promise<{ symbol: string; logoURI?: s
 async function fetchWhaleSignals(): Promise<WhaleSignal[]> {
   // For demo, generate realistic-looking signals
   // In production: Use Helius API or poll getSignaturesForAddress
-  
+
   const tokens = getCachedTokens().slice(0, 50); // Top 50 tokens
   if (tokens.length === 0) return [];
-  
+
   const signals: WhaleSignal[] = [];
   const now = Date.now();
-  
+
   // Generate 5-10 realistic signals
   const numSignals = 5 + Math.floor(Math.random() * 6);
-  
+
   for (let i = 0; i < numSignals; i++) {
     const token = tokens[Math.floor(Math.random() * Math.min(20, tokens.length))];
     const isBuy = Math.random() > 0.45; // Slightly more buys
     const usdValue = MIN_USD_VALUE + Math.random() * 990_000; // $10k - $1M
     const wallet = WHALE_WALLETS[Math.floor(Math.random() * WHALE_WALLETS.length)];
-    
+
     // Calculate token amount from USD (mock price)
-    const mockPrice = token.symbol === 'SOL' ? 140 : 
-                      token.symbol === 'JUP' ? 1.2 :
-                      token.symbol === 'BONK' ? 0.00002 :
-                      0.5 + Math.random() * 10;
+    const mockPrice = token.symbol === 'SOL' ? 140 :
+      token.symbol === 'JUP' ? 1.2 :
+        token.symbol === 'BONK' ? 0.00002 :
+          0.5 + Math.random() * 10;
     const amount = usdValue / mockPrice;
-    
+
     signals.push({
       type: isBuy ? 'BUY' : 'SELL',
       wallet: wallet,
@@ -652,7 +653,7 @@ async function fetchWhaleSignals(): Promise<WhaleSignal[]> {
       timestamp: now - Math.floor(Math.random() * 300_000), // Last 5 minutes
     });
   }
-  
+
   // Sort by timestamp (newest first)
   return signals.sort((a, b) => b.timestamp - a.timestamp);
 }
@@ -660,7 +661,7 @@ async function fetchWhaleSignals(): Promise<WhaleSignal[]> {
 app.get('/signals', async (req, res) => {
   try {
     const now = Date.now();
-    
+
     // Return cached if valid
     if (now - signalLastFetch < SIGNAL_TTL && signalCache.length > 0) {
       return res.json({
@@ -670,21 +671,21 @@ app.get('/signals', async (req, res) => {
         nextRefresh: SIGNAL_TTL - (now - signalLastFetch),
       });
     }
-    
+
     // Fetch new signals
     console.log('[SIGNALS] Fetching whale activity...');
     const signals = await fetchWhaleSignals();
-    
+
     signalCache = signals;
     signalLastFetch = now;
-    
+
     return res.json({
       source: 'fresh',
       count: signals.length,
       signals: signals,
       nextRefresh: SIGNAL_TTL,
     });
-    
+
   } catch (error: any) {
     console.error('[SIGNALS] Error:', error.message);
     return res.json({
