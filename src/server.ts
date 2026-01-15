@@ -296,75 +296,67 @@ app.get('/tokens', async (req, res) => {
       });
     }
 
-    console.log('[TOKENS] Fetching ALL Jupiter tokens (Global Scan)...');
+    console.log('[TOKENS] Fetching Verified Jupiter Universe...');
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60000); // 60s for massive list
+    const JUP_ENDPOINTS = [
+      "https://cache.jup.ag/tokens",
+      "https://quote-api.jup.ag/v6/tokens"
+    ];
 
-    try {
-      const response = await fetch('https://token.jup.ag/all', {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'application/json'
+    let tokens: any[] = [];
+    let source = 'none';
+
+    for (const url of JUP_ENDPOINTS) {
+      try {
+        console.log(`[TOKENS] Trying: ${url}`);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+
+        const response = await fetch(url, {
+          signal: controller.signal,
+          headers: { "Accept": "application/json" }
+        });
+        clearTimeout(timeout);
+
+        if (!response.ok) continue;
+
+        const text = await response.text();
+        if (text.startsWith("<!DOCTYPE")) {
+          console.warn(`[TOKENS] HTML response detected from ${url}`);
+          continue;
         }
-      });
-      clearTimeout(timeout);
 
-      if (!response.ok) throw new Error(`HTTP_${response.status}`);
+        const json = JSON.parse(text);
+        if (!Array.isArray(json) || json.length === 0) {
+          console.warn(`[TOKENS] Empty or invalid JSON from ${url}`);
+          continue;
+        }
 
-      const tokens = await response.json();
+        tokens = json;
+        source = url.includes('cache') ? 'jup-cache' : 'jup-v6-api';
+        console.log(`[TOKENS] ✓ Success from ${source}: ${tokens.length} tokens`);
+        break;
+      } catch (err: any) {
+        console.warn(`[TOKENS] Failed: ${url} (${err.message})`);
+      }
+    }
+
+    if (tokens.length > 0) {
       const filtered = tokens.filter(backendSanityFilter);
       const deduped = dedupeByAddress(filtered);
-
       setTokenCache(deduped);
-      console.log(`[TOKENS] ✓ ${deduped.length} tokens (Global)`);
-
-      return res.json({
-        source: 'jupiter-all',
-        count: deduped.length,
-        tokens: deduped
-      });
-    } catch (allError: any) {
-      console.warn('[TOKENS] All-list failed, trying strict fallback...', allError.message);
-
-      const response = await fetch('https://cache.jup.ag/strict-tokens', {
-        signal: controller.signal,
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      });
-
-      if (!response.ok) throw new Error(`FALLBACK_FAILED_${response.status}`);
-
-      const tokens = await response.json();
-      setTokenCache(tokens);
-
-      return res.json({
-        source: 'jupiter-strict-fallback',
-        count: tokens.length,
-        tokens: tokens,
-        warning: `Primary list failed: ${allError.message}`
-      });
-    }
-  } catch (error: any) {
-    console.error('[TOKENS] Total Failure:', error.message);
-
-    // Return cached tokens as fallback
-    if (getCachedTokens().length > 0) {
-      return res.json({
-        source: 'stale-cache',
-        count: getCachedTokens().length,
-        tokens: getCachedTokens(),
-        error: error.message
-      });
+      return res.json({ source, count: deduped.length, tokens: deduped });
     }
 
-    return res.status(503).json({
-      source: 'none',
-      count: 0,
-      tokens: [],
-      error: 'Token fetch failed. Deployment environment might be blocked.',
-      details: error.message
-    });
+    // EMERGENCY FALLBACK: Stale memory -> Bootstrap -> Error
+    const stale = getCachedTokens();
+    if (stale.length > 0) {
+      return res.json({ source: 'stale-cache', count: stale.length, tokens: stale, warning: 'All live mirrors failed' });
+    }
+
+    // Final safety net using the hardcoded bootstrap list
+    setTokenCache(EMERGENCY_BOOTSTRAP_TOKENS);
+    return res.json({ source: 'emergency-bootstrap', count: EMERGENCY_BOOTSTRAP_TOKENS.length, tokens: EMERGENCY_BOOTSTRAP_TOKENS });
   }
 });
 
