@@ -363,7 +363,7 @@ app.get('/tokens', async (req, res) => {
 // ============================================
 // QUOTE ENDPOINT (JUPITER ONLY + CACHE)
 // ============================================
-app.get('/quote', async (req, res) => {
+const quoteHandler = async (req: express.Request, res: express.Response) => {
   try {
     const { inputMint, outputMint, amount, slippageBps = '50' } = req.query as any;
 
@@ -431,12 +431,15 @@ app.get('/quote', async (req, res) => {
     console.error('[QUOTE] Error:', error);
     res.status(500).json({ error: 'Quote failed', routePlan: [] });
   }
-});
+};
+
+app.get('/quote', quoteHandler);
+app.get('/jupiter/quote', quoteHandler);
 
 // ============================================
 // SWAP ENDPOINT (JUPITER ONLY)
 // ============================================
-app.post('/swap', async (req, res) => {
+const swapHandler = async (req: express.Request, res: express.Response) => {
   try {
     const { quoteResponse, userPublicKey, wrapAndUnwrapSol = true } = req.body;
 
@@ -495,7 +498,10 @@ app.post('/swap', async (req, res) => {
     console.error('[SWAP] Error:', error);
     res.status(500).json({ error: 'Swap failed' });
   }
-});
+};
+
+app.post('/swap', swapHandler);
+app.post('/jupiter/swap', swapHandler);
 
 // ============================================
 // JITO BUNDLE (MEV PROTECTION)
