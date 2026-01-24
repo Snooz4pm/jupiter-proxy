@@ -14,8 +14,8 @@ export type IntegrityReport = {
     holderRisk: "LOW" | "MEDIUM" | "HIGH";
     behaviorRisk?: "LOW" | "MEDIUM" | "HIGH";
     flags: string[];
-    top1Pct?: number;
-    top10Pct?: number;
+    top1Pct: number;
+    top10Pct: number;
     score: number;
     behavior?: BehaviorReport;
 };
@@ -118,7 +118,14 @@ export class IntegrityScanner {
             ]);
 
             const data = (mintInfo.value?.data as any)?.parsed?.info;
-            if (!data) return { contractRisk: 'LOW', holderRisk: 'LOW', flags: [], score: 100 };
+            if (!data) return {
+                contractRisk: 'LOW',
+                holderRisk: 'LOW',
+                flags: [],
+                score: 100,
+                top1Pct: 0,
+                top10Pct: 0
+            };
 
             const holders = (largestAccounts.value || []).map(h => ({
                 amount: parseFloat(h.amount)
@@ -143,7 +150,14 @@ export class IntegrityScanner {
 
         } catch (err) {
             console.error(`[Integrity] Scan failed for ${mintAddress}:`, err);
-            return { contractRisk: 'LOW', holderRisk: 'LOW', flags: [], score: 100 };
+            return {
+                contractRisk: 'LOW',
+                holderRisk: 'LOW',
+                flags: [],
+                score: 100,
+                top1Pct: 0,
+                top10Pct: 0
+            };
         }
     }
 }
