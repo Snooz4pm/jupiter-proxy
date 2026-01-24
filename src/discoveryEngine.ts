@@ -1,4 +1,4 @@
-import { IntegrityScanner, IntegrityResult } from './integrityScanner';
+import { IntegrityScanner, IntegrityReport } from './integrityScanner';
 
 export interface DiscoveryResult {
     mint: string;
@@ -12,7 +12,7 @@ export interface DiscoveryResult {
     feasibility: 'POSSIBLE' | 'UNLIKELY' | 'UNREALISTIC';
     flow: string;
     timestamp: number;
-    integrity?: IntegrityResult;
+    integrity?: IntegrityReport;
 }
 
 export class DiscoveryEngine {
