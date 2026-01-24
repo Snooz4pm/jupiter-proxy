@@ -370,8 +370,11 @@ app.get('/tokens', async (req, res) => {
     }
 
     // Final safety net using the hardcoded bootstrap list
-    setTokenCache(EMERGENCY_BOOTSTRAP_TOKENS);
-    return res.json({ source: 'emergency-bootstrap', count: EMERGENCY_BOOTSTRAP_TOKENS.length, tokens: EMERGENCY_BOOTSTRAP_TOKENS });
+    setTokenCache(EMERGENCY_BOOTSTRAP_TOKENS || []);
+    return res.json({ source: 'emergency-bootstrap', count: (EMERGENCY_BOOTSTRAP_TOKENS || []).length, tokens: EMERGENCY_BOOTSTRAP_TOKENS || [] });
+  } catch (err: any) {
+    console.error('[TOKENS] Critical failure:', err);
+    res.status(500).json({ error: 'Failed to fetch tokens', message: err.message });
   }
 });
 
