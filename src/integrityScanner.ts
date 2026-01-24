@@ -53,28 +53,28 @@ export function analyzeTokenIntegrity(
 
     // 2. Supply Distribution Analysis (v2)
     let holderRisk: "LOW" | "MEDIUM" | "HIGH" = "LOW";
-    let top1Pct = 0;
-    let top10Pct = 0;
+    let finalTop1Pct = 0;
+    let finalTop10Pct = 0;
 
     if (holders && holders.length > 0 && mintInfo.supply > 0) {
         const top1Amount = holders[0].amount;
-        top1Pct = (top1Amount / mintInfo.supply) * 100;
+        finalTop1Pct = (top1Amount / mintInfo.supply) * 100;
 
-        if (top1Pct > 20) {
-            flags.push(`⚠️ Top Holder owns ${top1Pct.toFixed(1)}% (Dev/Cabal Warning)`);
+        if (finalTop1Pct > 20) {
+            flags.push(`⚠️ Top Holder owns ${finalTop1Pct.toFixed(1)}% (Dev/Cabal Warning)`);
             holderRisk = "HIGH";
             riskScore += 3;
-        } else if (top1Pct > 10) {
-            flags.push(`⚠️ Top Holder owns ${top1Pct.toFixed(1)}%`);
+        } else if (finalTop1Pct > 10) {
+            flags.push(`⚠️ Top Holder owns ${finalTop1Pct.toFixed(1)}%`);
             holderRisk = "MEDIUM";
             riskScore += 1;
         }
 
         const top10Sum = holders.slice(0, 10).reduce((sum, h) => sum + h.amount, 0);
-        top10Pct = (top10Sum / mintInfo.supply) * 100;
+        finalTop10Pct = (top10Sum / mintInfo.supply) * 100;
 
-        if (top10Pct > 50) {
-            flags.push(`⚠️ Top 10 own ${top10Pct.toFixed(1)}% (Concentrated)`);
+        if (finalTop10Pct > 50) {
+            flags.push(`⚠️ Top 10 own ${finalTop10Pct.toFixed(1)}% (Concentrated)`);
             if (holderRisk !== "HIGH") holderRisk = "MEDIUM";
             riskScore += 2;
         }
@@ -91,8 +91,8 @@ export function analyzeTokenIntegrity(
         holderRisk,
         behaviorRisk: behavior?.behaviorRisk || 'LOW',
         flags,
-        top1Pct,
-        top10Pct,
+        top1Pct: finalTop1Pct,
+        top10Pct: finalTop10Pct,
         score,
         behavior
     };
@@ -102,7 +102,6 @@ export class IntegrityScanner {
     private connection: Connection;
 
     constructor() {
-        // Hard-Check: Use Helius RPC to avoid public mainnet-beta rate limits
         const HELIUS_KEY = process.env.HELIUS_API_KEY || '';
         const rpcUrl = HELIUS_KEY
             ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}`
@@ -111,9 +110,6 @@ export class IntegrityScanner {
         this.connection = new Connection(rpcUrl, 'confirmed');
     }
 
-    /**
-     * Deep-tissue scan of a token mint config + distribution + behavior
-     */
     public async scan(mintAddress: string): Promise<IntegrityReport> {
         try {
             const mintPubkey = new PublicKey(mintAddress);
@@ -141,7 +137,6 @@ export class IntegrityScanner {
                     : parseFloat(h.amount)
             }));
 
-            // Behavioral Mock for Radar (due to latency constraints on background feed)
             const behavior: BehaviorReport = {
                 deployerAddress: data.mintAuthority || 'Unknown',
                 behaviorRisk: 'LOW',
