@@ -1,4 +1,8 @@
 import { IntegrityScanner, IntegrityReport } from './integrityScanner';
+import { analyzeBehavior, BehaviorReport } from './argus/behaviorEngine';
+import { analyzeTiming, TimingReport } from './argus/timingEngine';
+import { calculateReality, RealityMetrics } from './argus/realityEngine';
+import { getPrimaryRisk, PrimaryRisk } from './argus/riskScanner';
 
 export interface DiscoveryResult {
     mint: string;
@@ -13,6 +17,9 @@ export interface DiscoveryResult {
     flow: string;
     timestamp: number;
     integrity?: IntegrityReport;
+    behavior?: BehaviorReport;
+    timing?: TimingReport;
+    primaryRisk?: PrimaryRisk;
 }
 
 export class DiscoveryEngine {
@@ -76,8 +83,7 @@ export class DiscoveryEngine {
      */
     private async enrichAndScore(mint: string, flow: string, baseScore: number) {
         try {
-            // Wait slightly for DexScreener to index (3-5s) or use a direct check
-            // For MVP, we'll wait 2s then try to fetch price/fdv
+            // Wait slightly for DexScreener to index (5s)
             setTimeout(async () => {
                 const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
                 if (!res.ok) return;
@@ -87,7 +93,7 @@ export class DiscoveryEngine {
                 if (pairs.length === 0) return;
 
                 const bestPair = pairs.sort((a: any, b: any) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
-                this.processSignal(bestPair, baseScore + 5, flow); // Pass the specific event flow
+                this.processSignal(bestPair, baseScore + 5, flow);
             }, 5000);
         } catch (err) {
             console.error(`[Discovery] Enrichment failed for ${mint}:`, err);
@@ -96,7 +102,7 @@ export class DiscoveryEngine {
 
     private async pollVolumeSpikes() {
         try {
-            console.log('[Discovery] Intercepting Market Signals...');
+            console.log('[Discovery] Interception的市场信号...');
 
             // Survey multiple entry points for wider coverage
             const queries = ['solana', 'usdc', 'raydium'];
@@ -110,14 +116,10 @@ export class DiscoveryEngine {
                 }
             }
 
-            // High-Value Filtering: Exclude majors/stablecoins
             const EXCLUSION_LIST = [
                 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
                 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
                 'So11111111111111111111111111111111111111112', // Wrapped SOL
-                'mSoLzYq7mSbw61TJueRVD d69pSTB9M9v7G3S78j8',      // mSOL
-                '7dHbS7qbs62EjAnfX8iHv386qz7 5dY987654321',      // stSOL
-                'J1t9YjBes 1y5S3X5K 1X 1y5S3X5K'               // jitoSOL (Approx)
             ];
 
             for (const pair of allPairs) {
@@ -143,21 +145,17 @@ export class DiscoveryEngine {
         const liquidity = pair.liquidity?.usd || 0;
         const fdv = pair.fdv || 0;
 
-        // 1. Volume Activity (Lowered bars for discovery)
         if (volume5m > 500) score += 1;
         if (volume5m > 5000) score += 2;
         if (volume5m > 20000) score += 3;
 
-        // 2. Liquidity Depth
         if (liquidity > 2000) score += 1;
         if (liquidity > 10000) score += 2;
         if (liquidity > 50000) score += 3;
 
-        // 3. Asset Pairing
         if (pair.quoteToken?.symbol === 'SOL') score += 1;
         if (pair.quoteToken?.symbol === 'USDC') score += 1;
 
-        // 4. Sanity Filters
         if (fdv < 500) score -= 5;
         if (liquidity < 200) score -= 10;
 
@@ -174,11 +172,7 @@ export class DiscoveryEngine {
         const mcap = price * supply;
 
         // 1. Calculate Reality (Feasibility)
-        let feasibility: 'POSSIBLE' | 'UNLIKELY' | 'UNREALISTIC' = 'POSSIBLE';
-        const targetMcap = mcap * 10; // Baseline check at 10x
-
-        if (targetMcap > 10_000_000_000) feasibility = 'UNREALISTIC';
-        else if (targetMcap > 1_000_000_000) feasibility = 'UNLIKELY';
+        const reality = calculateReality(price, supply, price * 10);
 
         // Refined Flow Logic
         let flow = flowOverride || "Neutral";
@@ -190,12 +184,29 @@ export class DiscoveryEngine {
             else if (riskScore > 5) flow = "🛰️ Signal Found";
         }
 
-        // 2. PHASE 4: Core Integrity Scan (Non-blocking)
-        let integrity: IntegrityResult | undefined;
+        // 2. PHASE 4: Core Integrity Scan (Non-blocking but full protocol)
+        let integrity: IntegrityReport | undefined;
+        let behavior: BehaviorReport | undefined;
+        let timing: TimingReport | undefined;
+        let primaryRisk: PrimaryRisk | undefined;
+
         try {
+            // Full Intelligence Scan
             integrity = await this.integrityScanner.scan(mint);
+
+            // Mock behavior for radar (unless we add deployer mapping to DexScreener flow)
+            // Deployer is usually in integrity.behavior if the scanner found it
+            behavior = integrity.behavior;
+
+            timing = analyzeTiming(
+                { current: price, change24h: pair.priceChange?.h24 || 0 },
+                { current: pair.volume?.h24 || 0, change24h: 100 } // assumption: new tokens have high volume velocity
+            );
+
+            primaryRisk = getPrimaryRisk(integrity, behavior || null, timing, reality);
+
         } catch (e) {
-            console.error(`[Integrity] Quick scan failed for ${mint}`);
+            console.error(`[Integrity] Full Protocol scan failed for ${mint}`);
         }
 
         const result: DiscoveryResult = {
@@ -206,16 +217,18 @@ export class DiscoveryEngine {
             supply,
             mcap,
             volume5m: pair.volume?.m5 || 0,
-            riskScore: riskScore + (integrity?.score ? (integrity.score / 10) : 0), // Use integrity to influence ranking
-            feasibility,
+            riskScore: riskScore + (integrity?.score ? (integrity.score / 10) : 0),
+            feasibility: reality.feasibility,
             flow,
             timestamp: Date.now(),
-            integrity
+            integrity,
+            behavior,
+            timing,
+            primaryRisk
         };
 
         this.cache.set(mint, result);
 
-        // Cleanup old signals (> 30 mins)
         if (this.cache.size > 200) {
             const oldest = Array.from(this.cache.entries())
                 .sort((a, b) => a[1].timestamp - b[1].timestamp)[0];

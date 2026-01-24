@@ -1,13 +1,5 @@
 import { Connection, PublicKey } from '@solana/web3.js';
-
-export type BehaviorReport = {
-    deployerAddress: string;
-    behaviorRisk: "LOW" | "MEDIUM" | "HIGH";
-    fundingSource: { type: string; name?: string };
-    trackRecord: { totalLaunched: number; diedQuickly: number; confirmedRugs: number };
-    flags: string[];
-    score: number;
-};
+import { analyzeBehavior, BehaviorReport } from './argus/behaviorEngine';
 
 export type IntegrityReport = {
     contractRisk: "LOW" | "MEDIUM" | "HIGH";
@@ -100,33 +92,26 @@ export function analyzeTokenIntegrity(
 
 export class IntegrityScanner {
     private connection: Connection;
+    private heliusUrl: string;
 
     constructor() {
         const HELIUS_KEY = process.env.HELIUS_API_KEY || '';
-        const rpcUrl = HELIUS_KEY
-            ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}`
-            : (process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com');
-
-        this.connection = new Connection(rpcUrl, 'confirmed');
+        this.heliusUrl = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}`;
+        this.connection = new Connection(this.heliusUrl, 'confirmed');
     }
 
     public async scan(mintAddress: string): Promise<IntegrityReport> {
         try {
             const mintPubkey = new PublicKey(mintAddress);
+
+            // 1. Fetch Basic Info & Holders via RPC
             const [mintInfo, largestAccounts] = await Promise.all([
                 this.connection.getParsedAccountInfo(mintPubkey),
                 this.connection.getTokenLargestAccounts(mintPubkey)
             ]);
 
             const data = (mintInfo.value?.data as any)?.parsed?.info;
-            if (!data) return {
-                contractRisk: 'LOW',
-                holderRisk: 'LOW',
-                flags: [],
-                score: 100,
-                top1Pct: 0,
-                top10Pct: 0
-            };
+            if (!data) throw new Error("On-chain data missing");
 
             const decimals = data.decimals || 0;
             const supply = data.supply ? parseFloat(data.supply) : 0;
@@ -137,24 +122,41 @@ export class IntegrityScanner {
                     : parseFloat(h.amount)
             }));
 
-            const behavior: BehaviorReport = {
-                deployerAddress: data.mintAuthority || 'Unknown',
-                behaviorRisk: 'LOW',
-                fundingSource: { type: 'UNKNOWN' },
-                trackRecord: { totalLaunched: 0, diedQuickly: 0, confirmedRugs: 0 },
-                flags: [],
-                score: 100
-            };
+            // 2. Fetch Deployer Address via Helius DAS (Air-Traffic Control Grade)
+            let deployerAddress = data.mintAuthority || 'Unknown';
+
+            try {
+                const dasRes = await fetch(this.heliusUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        jsonrpc: "2.0",
+                        id: "das-check",
+                        method: "getAsset",
+                        params: { id: mintAddress }
+                    })
+                });
+                if (dasRes.ok) {
+                    const dasData = await dasRes.json();
+                    const asset = dasData.result;
+                    deployerAddress = asset.authorities?.[0]?.authority || asset.creators?.[0]?.address || deployerAddress;
+                }
+            } catch (e) {
+                console.warn(`[Integrity] DAS fallback failed for ${mintAddress}`);
+            }
+
+            // 3. Perform Behavioral Analysis (Human Signature DNA)
+            const behaviorReport = analyzeBehavior(deployerAddress, [], {});
 
             return analyzeTokenIntegrity({
                 mintAuthority: data.mintAuthority || null,
                 freezeAuthority: data.freezeAuthority || null,
                 supply: supply,
                 decimals: decimals
-            }, holders, behavior);
+            }, holders, behaviorReport);
 
-        } catch (err) {
-            console.error(`[Integrity] Scan failed for ${mintAddress}:`, err);
+        } catch (err: any) {
+            console.error(`[Integrity] Full Protocol scan failed for ${mintAddress}:`, err.message);
             return {
                 contractRisk: 'LOW',
                 holderRisk: 'LOW',
