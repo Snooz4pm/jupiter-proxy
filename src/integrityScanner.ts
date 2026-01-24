@@ -102,7 +102,12 @@ export class IntegrityScanner {
     private connection: Connection;
 
     constructor() {
-        const rpcUrl = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+        // Hard-Check: Use Helius RPC to avoid public mainnet-beta rate limits
+        const HELIUS_KEY = process.env.HELIUS_API_KEY || '';
+        const rpcUrl = HELIUS_KEY
+            ? `https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}`
+            : (process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com');
+
         this.connection = new Connection(rpcUrl, 'confirmed');
     }
 
@@ -127,8 +132,13 @@ export class IntegrityScanner {
                 top10Pct: 0
             };
 
+            const decimals = data.decimals || 0;
+            const supply = data.supply ? parseFloat(data.supply) : 0;
+
             const holders = (largestAccounts.value || []).map(h => ({
-                amount: parseFloat(h.amount)
+                amount: h.uiAmount !== undefined && h.uiAmount !== null
+                    ? h.uiAmount * Math.pow(10, decimals)
+                    : parseFloat(h.amount)
             }));
 
             // Behavioral Mock for Radar (due to latency constraints on background feed)
@@ -144,8 +154,8 @@ export class IntegrityScanner {
             return analyzeTokenIntegrity({
                 mintAuthority: data.mintAuthority || null,
                 freezeAuthority: data.freezeAuthority || null,
-                supply: data.supply ? parseFloat(data.supply) : 0,
-                decimals: data.decimals || 0
+                supply: supply,
+                decimals: decimals
             }, holders, behavior);
 
         } catch (err) {
