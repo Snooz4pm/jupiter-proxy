@@ -132,7 +132,7 @@ export class DiscoveryEngine {
             price,
             supply,
             mcap,
-            volume5m,
+            volume5m: v5m,
             riskScore,
             feasibility,
             flow,
