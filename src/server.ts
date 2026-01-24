@@ -10,8 +10,18 @@ import { DiscoveryEngine } from './discoveryEngine';
 const app = express();
 app.use(cors()); // Enable CORS for total data flow
 app.use(express.json({ limit: '5mb' })); // Allow Helius payloads
+
+// Diagnostic Middleware: Log every request to debug 404
+app.use((req, res, next) => {
+  console.log(`[DEBUG] ${req.method} ${req.url}`);
+  next();
+});
+
 const discovery = new DiscoveryEngine();
 discovery.start();
+
+// Verification endpoint
+app.get('/health', (req, res) => res.send('OK'));
 
 // Final safety fallback for token list
 const EMERGENCY_BOOTSTRAP_TOKENS = [
