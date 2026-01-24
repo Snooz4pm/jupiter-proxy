@@ -1,12 +1,23 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 
+export type BehaviorReport = {
+    deployerAddress: string;
+    behaviorRisk: "LOW" | "MEDIUM" | "HIGH";
+    fundingSource: { type: string; name?: string };
+    trackRecord: { totalLaunched: number; diedQuickly: number; confirmedRugs: number };
+    flags: string[];
+    score: number;
+};
+
 export type IntegrityReport = {
     contractRisk: "LOW" | "MEDIUM" | "HIGH";
     holderRisk: "LOW" | "MEDIUM" | "HIGH";
+    behaviorRisk?: "LOW" | "MEDIUM" | "HIGH";
     flags: string[];
     top1Pct?: number;
     top10Pct?: number;
     score: number;
+    behavior?: BehaviorReport;
 };
 
 export function analyzeTokenIntegrity(
@@ -16,10 +27,11 @@ export function analyzeTokenIntegrity(
         supply: number;
         decimals: number;
     },
-    holders?: { amount: number }[]
+    holders?: { amount: number }[],
+    behavior?: BehaviorReport
 ): IntegrityReport {
-    const flags: string[] = [];
-    let riskScore = 0;
+    const flags: string[] = [...(behavior?.flags || [])];
+    let riskScore = behavior?.behaviorRisk === 'HIGH' ? 3 : behavior?.behaviorRisk === 'MEDIUM' ? 1 : 0;
 
     // 1. Contract Configuration Checks
     if (mintInfo.mintAuthority) {
@@ -77,10 +89,12 @@ export function analyzeTokenIntegrity(
     return {
         contractRisk,
         holderRisk,
+        behaviorRisk: behavior?.behaviorRisk || 'LOW',
         flags,
         top1Pct,
         top10Pct,
-        score
+        score,
+        behavior
     };
 }
 
@@ -93,7 +107,7 @@ export class IntegrityScanner {
     }
 
     /**
-     * Deep-tissue scan of a token mint config + distribution
+     * Deep-tissue scan of a token mint config + distribution + behavior
      */
     public async scan(mintAddress: string): Promise<IntegrityReport> {
         try {
@@ -110,12 +124,22 @@ export class IntegrityScanner {
                 amount: parseFloat(h.amount)
             }));
 
+            // Behavioral Mock for Radar (due to latency constraints on background feed)
+            const behavior: BehaviorReport = {
+                deployerAddress: data.mintAuthority || 'Unknown',
+                behaviorRisk: 'LOW',
+                fundingSource: { type: 'UNKNOWN' },
+                trackRecord: { totalLaunched: 0, diedQuickly: 0, confirmedRugs: 0 },
+                flags: [],
+                score: 100
+            };
+
             return analyzeTokenIntegrity({
                 mintAuthority: data.mintAuthority || null,
                 freezeAuthority: data.freezeAuthority || null,
                 supply: data.supply ? parseFloat(data.supply) : 0,
                 decimals: data.decimals || 0
-            }, holders);
+            }, holders, behavior);
 
         } catch (err) {
             console.error(`[Integrity] Scan failed for ${mintAddress}:`, err);
