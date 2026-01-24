@@ -45,8 +45,8 @@ export class DiscoveryEngine {
         try {
             console.log('[Discovery] Intercepting Market Signals...');
 
-            // Survey both SOL and USDC pairs for wider coverage
-            const queries = ['solana', 'usdc'];
+            // Survey multiple entry points for wider coverage
+            const queries = ['solana', 'usdc', 'raydium'];
             const allPairs: any[] = [];
 
             for (const q of queries) {
@@ -57,11 +57,21 @@ export class DiscoveryEngine {
                 }
             }
 
+            // High-Value Filtering: Exclude majors/stablecoins
+            const EXCLUSION_LIST = [
+                'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+                'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+                'So11111111111111111111111111111111111111112', // Wrapped SOL
+                'mSoLzYq7mSbw61TJueRVD d69pSTB9M9v7G3S78j8',      // mSOL
+                '7dHbS7qbs62EjAnfX8iHv386qz7 5dY987654321',      // stSOL
+                'J1t9YjBes 1y5S3X5K 1X 1y5S3X5K'               // jitoSOL (Approx)
+            ];
+
             for (const pair of allPairs) {
                 if (pair.chainId !== 'solana' || !pair.baseToken) continue;
+                if (EXCLUSION_LIST.includes(pair.baseToken.address)) continue;
 
                 const score = this.scoreSignal(pair);
-                // Lowered threshold to 3 to populate the radar more aggressively
                 if (score >= 3) {
                     this.processSignal(pair, score);
                 }
