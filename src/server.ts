@@ -10,6 +10,7 @@ import { DiscoveryEngine } from './discoveryEngine';
 
 const app = express();
 app.use(cors()); // Enable CORS for total data flow
+app.use(express.json({ limit: '5mb' })); // Allow Helius payloads
 const discovery = new DiscoveryEngine();
 discovery.start();
 
@@ -21,7 +22,7 @@ const EMERGENCY_BOOTSTRAP_TOKENS = [
 ];
 
 // ============================================
-// ARGUS DISCOVERY FEED
+// ARGUS DISCOVERY FEED & WEBHOOK
 // ============================================
 app.get('/api/argus/feed', (req, res) => {
   const feed = discovery.getFeed();
@@ -31,6 +32,12 @@ app.get('/api/argus/feed', (req, res) => {
     count: feed.length,
     tokens: feed
   });
+});
+
+app.post('/api/discovery/webhook', async (req, res) => {
+  // Optional: Verify Authorization header if set in Helius dashboard
+  await discovery.handleWebhook(req.body);
+  res.sendStatus(200);
 });
 
 // ============================================

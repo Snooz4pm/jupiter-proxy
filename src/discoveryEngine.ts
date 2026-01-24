@@ -31,7 +31,7 @@ export class DiscoveryEngine {
         if (this.isPolling) return;
         this.isPolling = true;
         this.pollVolumeSpikes();
-        // Poll every 60 seconds
+        // Poll every 60 seconds (Baseline surveillance)
         setInterval(() => this.pollVolumeSpikes(), 60000);
     }
 
@@ -39,6 +39,61 @@ export class DiscoveryEngine {
         return Array.from(this.cache.values())
             .sort((a, b) => b.timestamp - a.timestamp)
             .slice(0, 50);
+    }
+
+    /**
+     * Phase 2 & 3: Real-time Webhook Interception
+     * Processes Helius Enhanced Transactions
+     */
+    public async handleWebhook(payload: any[]) {
+        try {
+            for (const tx of payload) {
+                if (tx.transactionError) continue;
+
+                // 1. Detect LP Creation (Raydium / Orca)
+                if (tx.type === 'INIT_POOL') {
+                    const mint = tx.tokenTransfers?.[0]?.mint || tx.accountData?.[0]?.account;
+                    if (mint) {
+                        console.log(`[Discovery] 🛰️ REAL-TIME LP INTERCEPTED: ${mint}`);
+                        this.enrichAndScore(mint, '🛰️ RECENT LP', 8);
+                    }
+                }
+
+                // 2. Detect New Token Mints
+                if (tx.type === 'TOKEN_MINT') {
+                    const mint = tx.instructions?.[0]?.accounts?.[0]; // Usually first account in InitializeMint
+                    if (mint) {
+                        console.log(`[Discovery] 🐣 NEWBORN TOKEN DETECTED: ${mint}`);
+                        this.enrichAndScore(mint, '🐣 NEWBORN', 5);
+                    }
+                }
+            }
+        } catch (err) {
+            console.error('[Discovery] Webhook processing failed:', err);
+        }
+    }
+
+    /**
+     * Fetch real-time data for an intercepted mint and push to radar
+     */
+    private async enrichAndScore(mint: string, flow: string, baseScore: number) {
+        try {
+            // Wait slightly for DexScreener to index (3-5s) or use a direct check
+            // For MVP, we'll wait 2s then try to fetch price/fdv
+            setTimeout(async () => {
+                const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
+                if (!res.ok) return;
+
+                const data = await res.json();
+                const pairs = data.pairs || [];
+                if (pairs.length === 0) return;
+
+                const bestPair = pairs.sort((a: any, b: any) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
+                this.processSignal(bestPair, baseScore + 5, flow); // Pass the specific event flow
+            }, 5000);
+        } catch (err) {
+            console.error(`[Discovery] Enrichment failed for ${mint}:`, err);
+        }
     }
 
     private async pollVolumeSpikes() {
@@ -111,7 +166,7 @@ export class DiscoveryEngine {
         return score;
     }
 
-    private processSignal(pair: any, riskScore: number) {
+    private processSignal(pair: any, riskScore: number, flowOverride?: string) {
         const mint = pair.baseToken.address;
         const price = parseFloat(pair.priceUsd || '0');
         const fdv = pair.fdv || 0;
@@ -128,12 +183,14 @@ export class DiscoveryEngine {
         else if (targetMcap > 1_000_000_000) feasibility = 'UNLIKELY';
 
         // Refined Flow Logic
-        let flow = "Neutral";
-        const v5m = pair.volume?.m5 || 0;
-        if (v5m > 100000) flow = "🐳 Mega Inflow";
-        else if (v5m > 20000) flow = "🔥 Momentum";
-        else if (v5m > 5000) flow = "📈 Accumulating";
-        else if (riskScore > 5) flow = "🛰️ Signal Found";
+        let flow = flowOverride || "Neutral";
+        if (!flowOverride) {
+            const v5m = pair.volume?.m5 || 0;
+            if (v5m > 100000) flow = "🐳 Mega Inflow";
+            else if (v5m > 20000) flow = "🔥 Momentum";
+            else if (v5m > 5000) flow = "📈 Accumulating";
+            else if (riskScore > 5) flow = "🛰️ Signal Found";
+        }
 
         const result: DiscoveryResult = {
             mint,
@@ -142,7 +199,7 @@ export class DiscoveryEngine {
             price,
             supply,
             mcap,
-            volume5m: v5m,
+            volume5m: pair.volume?.m5 || 0,
             riskScore,
             feasibility,
             flow,
