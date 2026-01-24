@@ -45,18 +45,24 @@ export class DiscoveryEngine {
         try {
             console.log('[Discovery] Intercepting Market Signals...');
 
-            // Hit DexScreener search for 'solana' to get recently active pairs
-            const res = await fetch('https://api.dexscreener.com/latest/dex/search?q=solana');
-            if (!res.ok) return;
+            // Survey both SOL and USDC pairs for wider coverage
+            const queries = ['solana', 'usdc'];
+            const allPairs: any[] = [];
 
-            const data = await res.json();
-            const pairs = data.pairs || [];
+            for (const q of queries) {
+                const res = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${q}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.pairs) allPairs.push(...data.pairs);
+                }
+            }
 
-            for (const pair of pairs) {
+            for (const pair of allPairs) {
                 if (pair.chainId !== 'solana' || !pair.baseToken) continue;
 
                 const score = this.scoreSignal(pair);
-                if (score >= 5) {
+                // Lowered threshold to 3 to populate the radar more aggressively
+                if (score >= 3) {
                     this.processSignal(pair, score);
                 }
             }
@@ -71,24 +77,26 @@ export class DiscoveryEngine {
         let score = 0;
 
         const volume5m = pair.volume?.m5 || 0;
-        const volume1h = pair.volume?.h1 || 0;
         const liquidity = pair.liquidity?.usd || 0;
         const fdv = pair.fdv || 0;
 
-        // 1. Volume Delta Score
+        // 1. Volume Activity (Lowered bars for discovery)
+        if (volume5m > 500) score += 1;
         if (volume5m > 5000) score += 2;
         if (volume5m > 20000) score += 3;
 
-        // 2. Liquidity Confidence
+        // 2. Liquidity Depth
+        if (liquidity > 2000) score += 1;
         if (liquidity > 10000) score += 2;
         if (liquidity > 50000) score += 3;
 
         // 3. Asset Pairing
-        if (pair.quoteToken?.symbol === 'SOL') score += 2;
+        if (pair.quoteToken?.symbol === 'SOL') score += 1;
+        if (pair.quoteToken?.symbol === 'USDC') score += 1;
 
         // 4. Sanity Filters
-        if (fdv < 1000) score -= 5; // Likely dust/spam
-        if (liquidity < 500) score -= 10; // Rug risk
+        if (fdv < 500) score -= 5;
+        if (liquidity < 200) score -= 10;
 
         return score;
     }
@@ -109,12 +117,13 @@ export class DiscoveryEngine {
         if (targetMcap > 10_000_000_000) feasibility = 'UNREALISTIC';
         else if (targetMcap > 1_000_000_000) feasibility = 'UNLIKELY';
 
-        // 2. Derive Flow
+        // Refined Flow Logic
         let flow = "Neutral";
-        const volume5m = pair.volume?.m5 || 0;
-        if (riskScore >= 8 && volume5m > 50000) flow = "🐳 Smart Inflow";
-        else if (volume5m > 20000) flow = "🔥 Momentum";
-        else if (riskScore < 0) flow = "⚠️ Risky Surge";
+        const v5m = pair.volume?.m5 || 0;
+        if (v5m > 100000) flow = "🐳 Mega Inflow";
+        else if (v5m > 20000) flow = "🔥 Momentum";
+        else if (v5m > 5000) flow = "📈 Accumulating";
+        else if (riskScore > 5) flow = "🛰️ Signal Found";
 
         const result: DiscoveryResult = {
             mint,
