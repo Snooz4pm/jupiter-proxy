@@ -6,7 +6,22 @@ import http from 'http';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { getMint, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
 
+import { DiscoveryEngine } from './discoveryEngine';
+
 const app = express();
+const discovery = new DiscoveryEngine();
+discovery.start();
+
+// ============================================
+// ARGUS DISCOVERY FEED
+// ============================================
+app.get('/api/argus/feed', (req, res) => {
+  res.json({
+    timestamp: Date.now(),
+    count: discovery.getFeed().length,
+    tokens: discovery.getFeed()
+  });
+});
 
 // ============================================
 // WALLET BALANCE ENDPOINT (for frontend)
