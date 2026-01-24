@@ -9,6 +9,7 @@ import { getMint, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, ASSOCIATED_TO
 import { DiscoveryEngine } from './discoveryEngine';
 
 const app = express();
+app.use(cors()); // Enable CORS for total data flow
 const discovery = new DiscoveryEngine();
 discovery.start();
 
@@ -23,10 +24,12 @@ const EMERGENCY_BOOTSTRAP_TOKENS = [
 // ARGUS DISCOVERY FEED
 // ============================================
 app.get('/api/argus/feed', (req, res) => {
+  const feed = discovery.getFeed();
+  console.log(`[ARGUS_FEED] Dispatching ${feed.length} signals to frontend.`);
   res.json({
     timestamp: Date.now(),
-    count: discovery.getFeed().length,
-    tokens: discovery.getFeed()
+    count: feed.length,
+    tokens: feed
   });
 });
 
