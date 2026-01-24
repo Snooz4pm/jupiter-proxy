@@ -1,9 +1,4 @@
-/**
- * Argus Discovery Engine (Phase 1)
- * Location: jupiter-proxy/src/discoveryEngine.ts
- * 
- * Background surveillance for Solana token events.
- */
+import { IntegrityScanner, IntegrityResult } from './integrityScanner';
 
 export interface DiscoveryResult {
     mint: string;
@@ -17,14 +12,17 @@ export interface DiscoveryResult {
     feasibility: 'POSSIBLE' | 'UNLIKELY' | 'UNREALISTIC';
     flow: string;
     timestamp: number;
+    integrity?: IntegrityResult;
 }
 
 export class DiscoveryEngine {
     private cache: Map<string, DiscoveryResult> = new Map();
     private isPolling = false;
+    private integrityScanner: IntegrityScanner;
 
     constructor() {
         console.log('[Discovery] Engine Initialized.');
+        this.integrityScanner = new IntegrityScanner();
     }
 
     public start() {
@@ -166,7 +164,7 @@ export class DiscoveryEngine {
         return score;
     }
 
-    private processSignal(pair: any, riskScore: number, flowOverride?: string) {
+    private async processSignal(pair: any, riskScore: number, flowOverride?: string) {
         const mint = pair.baseToken.address;
         const price = parseFloat(pair.priceUsd || '0');
         const fdv = pair.fdv || 0;
@@ -192,6 +190,14 @@ export class DiscoveryEngine {
             else if (riskScore > 5) flow = "🛰️ Signal Found";
         }
 
+        // 2. PHASE 4: Core Integrity Scan (Non-blocking)
+        let integrity: IntegrityResult | undefined;
+        try {
+            integrity = await this.integrityScanner.scan(mint);
+        } catch (e) {
+            console.error(`[Integrity] Quick scan failed for ${mint}`);
+        }
+
         const result: DiscoveryResult = {
             mint,
             symbol: pair.baseToken.symbol || '?',
@@ -200,10 +206,11 @@ export class DiscoveryEngine {
             supply,
             mcap,
             volume5m: pair.volume?.m5 || 0,
-            riskScore,
+            riskScore: riskScore + (integrity?.score ? (integrity.score / 10) : 0), // Use integrity to influence ranking
             feasibility,
             flow,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            integrity
         };
 
         this.cache.set(mint, result);
