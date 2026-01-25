@@ -75,34 +75,69 @@ export function analyzeTokenIntegrity(
         riskScore += 3;
     }
 
-    // 2. Supply Distribution Analysis
+    // 2. Supply Distribution Analysis - Reference Implementation
     let holderRisk: "LOW" | "MEDIUM" | "HIGH" = "LOW";
     let finalTop1Pct = 0;
     let finalTop10Pct = 0;
 
-    if (holders && holders.length > 0 && mintInfo.supply > 0) {
-        const top1Amount = holders[0].amount;
-        finalTop1Pct = (top1Amount / mintInfo.supply) * 100;
+    // DEBUG LOGGING
+    console.log('=== [RAILWAY] HOLDER % CALCULATION DEBUG ===');
+    console.log('mint.supply (raw):', mintInfo.supply);
+    console.log('mint.decimals:', mintInfo.decimals);
+    console.log('holders.length:', holders?.length || 0);
 
-        if (finalTop1Pct > 20) {
-            flags.push(`⚠️ Top Holder owns ${finalTop1Pct.toFixed(1)}% (Dev/Cabal Warning)`);
-            holderRisk = "HIGH";
-            riskScore += 3;
-        } else if (finalTop1Pct > 10) {
-            flags.push(`⚠️ Top Holder owns ${finalTop1Pct.toFixed(1)}%`);
-            holderRisk = "MEDIUM";
-            riskScore += 1;
+    if (holders && holders.length > 0 && mintInfo.supply > 0) {
+        // STEP 1: Explicit sorting (don't trust input order)
+        const sortedHolders = [...holders].sort((a, b) => b.amount - a.amount);
+
+        console.log('topHolder.amount (raw):', sortedHolders[0]?.amount);
+
+        // STEP 2: Normalize to same units (human tokens, not raw)
+        const divisor = Math.pow(10, mintInfo.decimals);
+        const supplyTokens = mintInfo.supply / divisor;
+        const topHolderTokens = sortedHolders[0].amount / divisor;
+
+        console.log('divisor:', divisor);
+        console.log('normalizedSupply:', supplyTokens);
+        console.log('normalizedTopHolder:', topHolderTokens);
+
+        // STEP 3: Calculate percentage (both in same units)
+        if (supplyTokens > 0) {
+            finalTop1Pct = (topHolderTokens / supplyTokens) * 100;
+            console.log('FINAL Top1%:', finalTop1Pct);
+
+            if (finalTop1Pct > 20) {
+                flags.push(`⚠️ Top Holder owns ${finalTop1Pct.toFixed(1)}% (Dev/Cabal Warning)`);
+                holderRisk = "HIGH";
+                riskScore += 3;
+            } else if (finalTop1Pct > 10) {
+                flags.push(`⚠️ Top Holder owns ${finalTop1Pct.toFixed(1)}%`);
+                holderRisk = "MEDIUM";
+                riskScore += 1;
+            }
         }
 
-        const top10Sum = holders.slice(0, 10).reduce((sum, h) => sum + h.amount, 0);
-        finalTop10Pct = (top10Sum / mintInfo.supply) * 100;
+        // STEP 4: Calculate Top 10 concentration
+        const top10Sum = sortedHolders.slice(0, 10).reduce((sum, h) => sum + h.amount, 0);
+        const top10Tokens = top10Sum / divisor;
+        finalTop10Pct = (top10Tokens / supplyTokens) * 100;
+
+        console.log('top10Tokens:', top10Tokens);
+        console.log('FINAL Top10%:', finalTop10Pct);
 
         if (finalTop10Pct > 50) {
             flags.push(`⚠️ Top 10 own ${finalTop10Pct.toFixed(1)}% (Concentrated)`);
             if (holderRisk !== "HIGH") holderRisk = "MEDIUM";
             riskScore += 2;
         }
+    } else {
+        console.warn('⚠️ [RAILWAY] HOLDER CALCULATION SKIPPED:', {
+            hasHolders: !!holders,
+            holdersLength: holders?.length || 0,
+            supply: mintInfo.supply
+        });
     }
+    console.log('=== END DEBUG ===');
 
     let contractRisk: IntegrityReport["contractRisk"] = "LOW";
     if (riskScore >= 4) contractRisk = "HIGH";
