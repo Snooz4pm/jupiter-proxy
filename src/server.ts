@@ -773,10 +773,30 @@ app.get('/signals', async (req, res) => {
 });
 
 // ============================================
+// WALLET SCANNER (BOUNDED & CACHED)
+// ============================================
+import { WalletScanner } from './walletScanner';
+const scanner = new WalletScanner();
+
+app.get('/api/scan/wallet/:address', async (req, res) => {
+  try {
+    const { address } = req.params;
+    if (!address) return res.status(400).json({ error: 'Missing wallet address' });
+
+    const result = await scanner.scan(address);
+    res.json(result);
+  } catch (err: any) {
+    console.error('[API Scanner] Error:', err);
+    res.status(500).json({ error: 'Scan failed', details: err.message });
+  }
+});
+
+// ============================================
 // START SERVER
 // ============================================
 server.listen(PORT, () => {
   console.log(`🚀 Jupiter Proxy running on port ${PORT}`);
   console.log(`📡 Mode: Jupiter-only (no multi-DEX router)`);
+  console.log(`🔍 Wallet Scanner: Enabled (Bounded)`);
   console.log(`⚠️ CORS: ${allowedOrigins.join(', ')}`);
 });
