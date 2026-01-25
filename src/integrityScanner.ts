@@ -1,6 +1,11 @@
 import { Connection, PublicKey } from '@solana/web3.js';
 import { analyzeBehavior, BehaviorReport } from './argus/behaviorEngine';
 
+export interface DistributionQuality {
+    score: number;
+    grade: 'HEALTHY' | 'MODERATE_RISK' | 'HIGHLY_CENTRALIZED';
+}
+
 export type IntegrityReport = {
     contractRisk: "LOW" | "MEDIUM" | "HIGH";
     holderRisk: "LOW" | "MEDIUM" | "HIGH";
@@ -10,7 +15,34 @@ export type IntegrityReport = {
     top10Pct: number;
     score: number;
     behavior?: BehaviorReport;
+    distributionQuality?: DistributionQuality;
 };
+
+function calculateDistributionQuality(
+    top1Pct: number,
+    top10Pct: number
+): DistributionQuality {
+    let score = 100;
+
+    if (top1Pct > 50) score -= 40;
+    else if (top1Pct > 30) score -= 30;
+    else if (top1Pct > 20) score -= 20;
+    else if (top1Pct > 10) score -= 10;
+    else if (top1Pct < 5) score += 5;
+
+    if (top10Pct > 80) score -= 30;
+    else if (top10Pct > 60) score -= 20;
+    else if (top10Pct > 40) score -= 10;
+    else if (top10Pct < 25) score += 5;
+
+    score = Math.max(0, Math.min(100, score));
+
+    let grade: DistributionQuality['grade'] = 'HEALTHY';
+    if (score < 50) grade = 'HIGHLY_CENTRALIZED';
+    else if (score < 80) grade = 'MODERATE_RISK';
+
+    return { score, grade };
+}
 
 export function analyzeTokenIntegrity(
     mintInfo: {
@@ -43,7 +75,7 @@ export function analyzeTokenIntegrity(
         riskScore += 3;
     }
 
-    // 2. Supply Distribution Analysis (v2)
+    // 2. Supply Distribution Analysis
     let holderRisk: "LOW" | "MEDIUM" | "HIGH" = "LOW";
     let finalTop1Pct = 0;
     let finalTop10Pct = 0;
@@ -78,6 +110,9 @@ export function analyzeTokenIntegrity(
 
     const score = Math.max(0, 100 - (riskScore * 10));
 
+    // Calculate distribution quality
+    const distributionQuality = calculateDistributionQuality(finalTop1Pct, finalTop10Pct);
+
     return {
         contractRisk,
         holderRisk,
@@ -86,7 +121,8 @@ export function analyzeTokenIntegrity(
         top1Pct: finalTop1Pct,
         top10Pct: finalTop10Pct,
         score,
-        behavior
+        behavior,
+        distributionQuality
     };
 }
 
@@ -122,7 +158,7 @@ export class IntegrityScanner {
                     : parseFloat(h.amount)
             }));
 
-            // 2. Fetch Deployer Address via Helius DAS (Air-Traffic Control Grade)
+            // 2. Fetch Deployer Address via Helius DAS
             let deployerAddress = data.mintAuthority || 'Unknown';
 
             try {
@@ -145,7 +181,7 @@ export class IntegrityScanner {
                 console.warn(`[Integrity] DAS fallback failed for ${mintAddress}`);
             }
 
-            // 3. Perform Behavioral Analysis (Human Signature DNA)
+            // 3. Perform Behavioral Analysis
             const behaviorReport = analyzeBehavior(deployerAddress, [], {});
 
             return analyzeTokenIntegrity({
