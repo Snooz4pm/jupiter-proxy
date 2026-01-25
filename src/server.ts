@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import cors from 'cors';
 import { Server } from 'socket.io';
 import http from 'http';
@@ -8,6 +9,7 @@ import { getMint, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, ASSOCIATED_TO
 import { DiscoveryEngine } from './discoveryEngine';
 
 const app = express();
+app.use(compression());
 app.use(cors()); // Enable CORS for total data flow
 app.use(express.json({ limit: '5mb' })); // Allow Helius payloads
 
@@ -327,13 +329,32 @@ function backendSanityFilter(token: any) {
 
 app.get('/tokens', async (req, res) => {
   try {
+    // Fast mode: return only top 1000 tokens with minimal fields
+    const mode = req.query.mode;
     // Return cached if valid
     if (isTokenCacheValid()) {
-      console.log('[TOKENS] ✓ Cache hit');
+      let tokens = getCachedTokens();
+      if (mode === 'fast') {
+        tokens = tokens
+          .filter((t: any) => (t.liquidityUsd ?? t.liquidity ?? 0) > 5000)
+          .sort((a: any, b: any) => (b.volume24h ?? b.volume24hUsd ?? 0) - (a.volume24h ?? a.volume24hUsd ?? 0))
+          .slice(0, 1000)
+          .map((t: any) => ({
+            address: t.address,
+            symbol: t.symbol,
+            name: t.name,
+            decimals: t.decimals,
+            logoURI: t.logoURI,
+            liquidityUsd: t.liquidityUsd ?? t.liquidity ?? 0,
+            volume24h: t.volume24h ?? t.volume24hUsd ?? 0,
+            mint: t.mint ?? t.address
+          }));
+        return res.json({ source: 'memory-cache-fast', count: tokens.length, tokens });
+      }
       return res.json({
         source: 'memory-cache',
-        count: getCachedTokens().length,
-        tokens: getCachedTokens()
+        count: tokens.length,
+        tokens
       });
     }
 
