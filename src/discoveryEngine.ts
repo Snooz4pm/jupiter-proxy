@@ -22,6 +22,13 @@ export interface DiscoveryResult {
     primaryRisk?: PrimaryRisk;
 }
 
+
+// DexScreener enrichment cache (in-memory, 5 min TTL)
+const dexscreenerCache = new Map<string, { data: any, expires: number }>();
+const DEXSCREENER_TTL = 5 * 60 * 1000;
+let dexscreenerActiveRequests = 0;
+const DEXSCREENER_MAX_CONCURRENT = 5;
+
 export class DiscoveryEngine {
     private cache: Map<string, DiscoveryResult> = new Map();
     private isPolling = false;
@@ -83,17 +90,41 @@ export class DiscoveryEngine {
      */
     private async enrichAndScore(mint: string, flow: string, baseScore: number) {
         try {
-            // Wait slightly for DexScreener to index (5s)
-            setTimeout(async () => {
-                const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
-                if (!res.ok) return;
-
-                const data = await res.json();
-                const pairs = data.pairs || [];
+            // Throttle concurrent DexScreener requests
+            if (dexscreenerActiveRequests >= DEXSCREENER_MAX_CONCURRENT) {
+                console.warn(`[Discovery] DexScreener throttle: too many concurrent requests.`);
+                return;
+            }
+            // Check cache
+            const now = Date.now();
+            const cached = dexscreenerCache.get(mint);
+            if (cached && cached.expires > now) {
+                const pairs = cached.data.pairs || [];
                 if (pairs.length === 0) return;
-
                 const bestPair = pairs.sort((a: any, b: any) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
                 this.processSignal(bestPair, baseScore + 5, flow);
+                return;
+            }
+            // Wait slightly for DexScreener to index (5s)
+            setTimeout(async () => {
+                try {
+                    dexscreenerActiveRequests++;
+                    const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
+                    if (!res.ok) {
+                        dexscreenerActiveRequests--;
+                        return;
+                    }
+                    const data = await res.json();
+                    dexscreenerCache.set(mint, { data, expires: Date.now() + DEXSCREENER_TTL });
+                    dexscreenerActiveRequests--;
+                    const pairs = data.pairs || [];
+                    if (pairs.length === 0) return;
+                    const bestPair = pairs.sort((a: any, b: any) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
+                    this.processSignal(bestPair, baseScore + 5, flow);
+                } catch (err) {
+                    dexscreenerActiveRequests--;
+                    console.error(`[Discovery] Enrichment failed for ${mint}:`, err);
+                }
             }, 5000);
         } catch (err) {
             console.error(`[Discovery] Enrichment failed for ${mint}:`, err);

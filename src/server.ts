@@ -380,13 +380,15 @@ function backendSanityFilter(token: any) {
 }
 
 app.get('/tokens', async (req, res) => {
+  const startTime = Date.now();
+  let status = 200;
   try {
     // Fast mode: return only top 1000 tokens with minimal fields
     const mode = req.query.mode;
     let tokens = getCachedTokens();
     let cacheValid = isTokenCacheValid();
 
-    // Always respond instantly with whatever is cached (even if stale)
+    let responsePayload;
     if (mode === 'fast') {
       let fastTokens = tokens
         .filter((t: any) => (t.liquidityUsd ?? t.liquidity ?? 0) > 5000)
@@ -402,10 +404,31 @@ app.get('/tokens', async (req, res) => {
           volume24h: t.volume24h ?? t.volume24hUsd ?? 0,
           mint: t.mint ?? t.address
         }));
-      res.json({ source: cacheValid ? 'memory-cache-fast' : 'stale-cache-fast', count: fastTokens.length, tokens: fastTokens });
+      responsePayload = { source: cacheValid ? 'memory-cache-fast' : 'stale-cache-fast', count: fastTokens.length, tokens: fastTokens };
+      res.json(responsePayload);
     } else {
-      res.json({ source: cacheValid ? 'memory-cache' : 'stale-cache', count: tokens.length, tokens });
+      // Pagination for full token list
+      let page = parseInt(req.query.page as string) || 1;
+      let limit = Math.min(parseInt(req.query.limit as string) || 1000, 10000); // max 10k per page
+      if (page < 1) page = 1;
+      const total = tokens.length;
+      const start = (page - 1) * limit;
+      const end = start + limit;
+      const pagedTokens = tokens.slice(start, end);
+      responsePayload = {
+        source: cacheValid ? 'memory-cache' : 'stale-cache',
+        count: pagedTokens.length,
+        total,
+        page,
+        limit,
+        tokens: pagedTokens
+      };
+      res.json(responsePayload);
     }
+
+    const endTime = Date.now();
+    const payloadSize = Buffer.byteLength(JSON.stringify(responsePayload));
+    console.log(`[TOKENS] /tokens request | mode=${mode || 'full'} | status=${status} | count=${responsePayload.count} | size=${(payloadSize/1024/1024).toFixed(2)}MB | time=${endTime-startTime}ms`);
 
     // If cache is stale, refresh in background (do not await)
     if (!cacheValid) {
@@ -459,7 +482,9 @@ app.get('/tokens', async (req, res) => {
       })();
     }
   } catch (err: any) {
-    console.error('[TOKENS] Critical failure:', err);
+    status = 500;
+    const endTime = Date.now();
+    console.error(`[TOKENS] /tokens error | status=500 | time=${endTime-startTime}ms | error=${err.message}`);
     res.status(500).json({ error: 'Failed to fetch tokens', message: err.message });
   }
 });
