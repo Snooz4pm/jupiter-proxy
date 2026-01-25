@@ -194,13 +194,12 @@ export class DiscoveryEngine {
             // Full Intelligence Scan
             integrity = await this.integrityScanner.scan(mint);
 
-            // Mock behavior for radar (unless we add deployer mapping to DexScreener flow)
-            // Deployer is usually in integrity.behavior if the scanner found it
-            behavior = integrity.behavior;
+            // Behavior is not included in integrity report - would need separate scan
+            behavior = null;
 
             timing = analyzeTiming(
                 { current: price, change24h: pair.priceChange?.h24 || 0 },
-                { current: pair.volume?.h24 || 0, change24h: 100 } // assumption: new tokens have high volume velocity
+                { current: pair.volume?.h24 || 0, change24h: 100 }
             );
 
             primaryRisk = getPrimaryRisk(integrity, behavior || null, timing, reality);
