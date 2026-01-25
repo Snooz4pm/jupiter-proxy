@@ -195,7 +195,7 @@ export class DiscoveryEngine {
             integrity = await this.integrityScanner.scan(mint);
 
             // Behavior is not included in integrity report - would need separate scan
-            behavior = null;
+            behavior = undefined;
 
             timing = analyzeTiming(
                 { current: price, change24h: pair.priceChange?.h24 || 0 },
