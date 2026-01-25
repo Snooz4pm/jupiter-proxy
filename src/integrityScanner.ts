@@ -1,5 +1,4 @@
 import { Connection, PublicKey } from '@solana/web3.js';
-import { analyzeBehavior, BehaviorReport } from './argus/behaviorEngine';
 
 export interface DistributionQuality {
     score: number;
@@ -134,12 +133,10 @@ export function analyzeTokenIntegrity(
     return {
         contractRisk,
         holderRisk,
-        behaviorRisk: behavior?.behaviorRisk || 'LOW',
         flags,
         top1Pct: finalTop1Pct,
         top10Pct: finalTop10Pct,
         score,
-        behavior,
         distributionQuality
     };
 }
@@ -198,9 +195,6 @@ export class IntegrityScanner {
             } catch (e) {
                 console.warn(`[Integrity] DAS fallback failed for ${mintAddress}`);
             }
-
-            // 3. Perform Behavioral Analysis
-            const behaviorReport = analyzeBehavior(deployerAddress, [], {});
 
             return analyzeTokenIntegrity({
                 mintAuthority: data.mintAuthority || null,
