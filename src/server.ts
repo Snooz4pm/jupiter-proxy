@@ -65,6 +65,12 @@ app.get('/api/tokens/featured', (req, res) => {
   try {
     let tokens = getCachedTokens();
     let cacheValid = isTokenCacheValid();
+    console.log('[FEATURED] getCachedTokens type:', typeof tokens, Array.isArray(tokens) ? 'array' : typeof tokens);
+    console.log('[FEATURED] getCachedTokens length:', tokens?.length);
+    if (!Array.isArray(tokens)) {
+      console.error('[FEATURED] getCachedTokens is not an array:', tokens);
+      tokens = [];
+    }
     // RELAXED: No liquidity filter, just top 1000 by volume
     let featuredTokens = tokens
       .sort((a, b) => (b.volume24h ?? b.volume24hUsd ?? 0) - (a.volume24h ?? a.volume24hUsd ?? 0))
@@ -79,6 +85,7 @@ app.get('/api/tokens/featured', (req, res) => {
         volume24h: t.volume24h ?? t.volume24hUsd ?? 0,
         mint: t.mint ?? t.address
       }));
+    console.log('[FEATURED] featuredTokens length:', featuredTokens.length);
     res.json({ source: cacheValid ? 'memory-cache-featured' : 'stale-cache-featured', count: featuredTokens.length, tokens: featuredTokens });
   } catch (err: any) {
     console.error('[TOKENS/FEATURED] Error:', err);
