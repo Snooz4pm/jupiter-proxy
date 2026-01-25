@@ -331,94 +331,81 @@ app.get('/tokens', async (req, res) => {
   try {
     // Fast mode: return only top 1000 tokens with minimal fields
     const mode = req.query.mode;
-    // Return cached if valid
-    if (isTokenCacheValid()) {
-      let tokens = getCachedTokens();
-      if (mode === 'fast') {
-        tokens = tokens
-          .filter((t: any) => (t.liquidityUsd ?? t.liquidity ?? 0) > 5000)
-          .sort((a: any, b: any) => (b.volume24h ?? b.volume24hUsd ?? 0) - (a.volume24h ?? a.volume24hUsd ?? 0))
-          .slice(0, 1000)
-          .map((t: any) => ({
-            address: t.address,
-            symbol: t.symbol,
-            name: t.name,
-            decimals: t.decimals,
-            logoURI: t.logoURI,
-            liquidityUsd: t.liquidityUsd ?? t.liquidity ?? 0,
-            volume24h: t.volume24h ?? t.volume24hUsd ?? 0,
-            mint: t.mint ?? t.address
-          }));
-        return res.json({ source: 'memory-cache-fast', count: tokens.length, tokens });
-      }
-      return res.json({
-        source: 'memory-cache',
-        count: tokens.length,
-        tokens
-      });
+    let tokens = getCachedTokens();
+    let cacheValid = isTokenCacheValid();
+
+    // Always respond instantly with whatever is cached (even if stale)
+    if (mode === 'fast') {
+      let fastTokens = tokens
+        .filter((t: any) => (t.liquidityUsd ?? t.liquidity ?? 0) > 5000)
+        .sort((a: any, b: any) => (b.volume24h ?? b.volume24hUsd ?? 0) - (a.volume24h ?? a.volume24hUsd ?? 0))
+        .slice(0, 1000)
+        .map((t: any) => ({
+          address: t.address,
+          symbol: t.symbol,
+          name: t.name,
+          decimals: t.decimals,
+          logoURI: t.logoURI,
+          liquidityUsd: t.liquidityUsd ?? t.liquidity ?? 0,
+          volume24h: t.volume24h ?? t.volume24hUsd ?? 0,
+          mint: t.mint ?? t.address
+        }));
+      res.json({ source: cacheValid ? 'memory-cache-fast' : 'stale-cache-fast', count: fastTokens.length, tokens: fastTokens });
+    } else {
+      res.json({ source: cacheValid ? 'memory-cache' : 'stale-cache', count: tokens.length, tokens });
     }
 
-    console.log('[TOKENS] Fetching Verified Jupiter Universe...');
-
-    const JUP_ENDPOINTS = [
-      "https://cache.jup.ag/tokens",
-      "https://quote-api.jup.ag/v6/tokens"
-    ];
-
-    let tokens: any[] = [];
-    let source = 'none';
-
-    for (const url of JUP_ENDPOINTS) {
-      try {
-        console.log(`[TOKENS] Trying: ${url}`);
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 15000);
-
-        const response = await fetch(url, {
-          signal: controller.signal,
-          headers: { "Accept": "application/json" }
-        });
-        clearTimeout(timeout);
-
-        if (!response.ok) continue;
-
-        const text = await response.text();
-        if (text.startsWith("<!DOCTYPE")) {
-          console.warn(`[TOKENS] HTML response detected from ${url}`);
-          continue;
+    // If cache is stale, refresh in background (do not await)
+    if (!cacheValid) {
+      (async () => {
+        try {
+          console.log('[TOKENS] Background refresh...');
+          const JUP_ENDPOINTS = [
+            "https://cache.jup.ag/tokens",
+            "https://quote-api.jup.ag/v6/tokens"
+          ];
+          let tokens: any[] = [];
+          let source = 'none';
+          for (const url of JUP_ENDPOINTS) {
+            try {
+              console.log(`[TOKENS] Trying: ${url}`);
+              const controller = new AbortController();
+              const timeout = setTimeout(() => controller.abort(), 15000);
+              const response = await fetch(url, {
+                signal: controller.signal,
+                headers: { "Accept": "application/json" }
+              });
+              clearTimeout(timeout);
+              if (!response.ok) continue;
+              const text = await response.text();
+              if (text.startsWith("<!DOCTYPE")) {
+                console.warn(`[TOKENS] HTML response detected from ${url}`);
+                continue;
+              }
+              const json = JSON.parse(text);
+              if (!Array.isArray(json) || json.length === 0) {
+                console.warn(`[TOKENS] Empty or invalid JSON from ${url}`);
+                continue;
+              }
+              tokens = json;
+              source = url.includes('cache') ? 'jup-cache' : 'jup-v6-api';
+              console.log(`[TOKENS] ✓ Success from ${source}: ${tokens.length} tokens`);
+              break;
+            } catch (err: any) {
+              console.warn(`[TOKENS] Failed: ${url} (${err.message})`);
+            }
+          }
+          if (tokens.length > 0) {
+            const filtered = tokens.filter(backendSanityFilter);
+            const deduped = dedupeByAddress(filtered);
+            setTokenCache(deduped);
+            console.log(`[TOKENS] Cache updated: ${deduped.length} tokens`);
+          }
+        } catch (err) {
+          console.error('[TOKENS] Background refresh failed:', err);
         }
-
-        const json = JSON.parse(text);
-        if (!Array.isArray(json) || json.length === 0) {
-          console.warn(`[TOKENS] Empty or invalid JSON from ${url}`);
-          continue;
-        }
-
-        tokens = json;
-        source = url.includes('cache') ? 'jup-cache' : 'jup-v6-api';
-        console.log(`[TOKENS] ✓ Success from ${source}: ${tokens.length} tokens`);
-        break;
-      } catch (err: any) {
-        console.warn(`[TOKENS] Failed: ${url} (${err.message})`);
-      }
+      })();
     }
-
-    if (tokens.length > 0) {
-      const filtered = tokens.filter(backendSanityFilter);
-      const deduped = dedupeByAddress(filtered);
-      setTokenCache(deduped);
-      return res.json({ source, count: deduped.length, tokens: deduped });
-    }
-
-    // EMERGENCY FALLBACK: Stale memory -> Bootstrap -> Error
-    const stale = getCachedTokens();
-    if (stale.length > 0) {
-      return res.json({ source: 'stale-cache', count: stale.length, tokens: stale, warning: 'All live mirrors failed' });
-    }
-
-    // Final safety net using the hardcoded bootstrap list
-    setTokenCache(EMERGENCY_BOOTSTRAP_TOKENS || []);
-    return res.json({ source: 'emergency-bootstrap', count: (EMERGENCY_BOOTSTRAP_TOKENS || []).length, tokens: EMERGENCY_BOOTSTRAP_TOKENS || [] });
   } catch (err: any) {
     console.error('[TOKENS] Critical failure:', err);
     res.status(500).json({ error: 'Failed to fetch tokens', message: err.message });
