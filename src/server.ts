@@ -80,7 +80,7 @@ app.get('/api/tokens/featured', (req, res) => {
         mint: t.mint ?? t.address
       }));
     res.json({ source: cacheValid ? 'memory-cache-featured' : 'stale-cache-featured', count: featuredTokens.length, tokens: featuredTokens });
-  } catch (err) {
+  } catch (err: any) {
     console.error('[TOKENS/FEATURED] Error:', err);
     res.status(500).json({ error: 'Failed to fetch featured tokens', message: err.message });
   }
