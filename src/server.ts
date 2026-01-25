@@ -1,3 +1,13 @@
+
+import express from 'express';
+import compression from 'compression';
+import cors from 'cors';
+import { Server } from 'socket.io';
+import http from 'http';
+import { Connection, PublicKey } from '@solana/web3.js';
+import { getMint, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { DiscoveryEngine } from './discoveryEngine';
+
 // ============================================
 // TOKEN SEARCH ENDPOINT (SYMBOL OR MINT)
 // ============================================
@@ -50,15 +60,6 @@ app.get('/api/tokens/featured', (req, res) => {
     res.status(500).json({ error: 'Failed to fetch featured tokens', message: err.message });
   }
 });
-import express from 'express';
-import compression from 'compression';
-import cors from 'cors';
-import { Server } from 'socket.io';
-import http from 'http';
-import { Connection, PublicKey } from '@solana/web3.js';
-import { getMint, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
-
-import { DiscoveryEngine } from './discoveryEngine';
 
 const app = express();
 app.use(compression());
