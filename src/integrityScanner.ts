@@ -8,12 +8,10 @@ export interface DistributionQuality {
 export type IntegrityReport = {
     contractRisk: "LOW" | "MEDIUM" | "HIGH";
     holderRisk: "LOW" | "MEDIUM" | "HIGH";
-    behaviorRisk?: "LOW" | "MEDIUM" | "HIGH";
     flags: string[];
     top1Pct: number;
     top10Pct: number;
     score: number;
-    behavior?: BehaviorReport;
     distributionQuality?: DistributionQuality;
 };
 
