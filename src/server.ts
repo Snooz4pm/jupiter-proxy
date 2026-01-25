@@ -1,3 +1,55 @@
+// ============================================
+// TOKEN SEARCH ENDPOINT (SYMBOL OR MINT)
+// ============================================
+app.get('/api/tokens/search', (req, res) => {
+  try {
+    const q = (req.query.q || '').toString().trim().toLowerCase();
+    if (!q || q.length < 2) {
+      return res.json({ tokens: [] });
+    }
+    let tokens = getCachedTokens();
+    // Match by symbol or mint (address)
+    let results = tokens.filter((t: any) => {
+      return (
+        (t.symbol && t.symbol.toLowerCase().includes(q)) ||
+        (t.name && t.name.toLowerCase().includes(q)) ||
+        (t.address && t.address.toLowerCase() === q) ||
+        (t.mint && t.mint.toLowerCase() === q)
+      );
+    }).slice(0, 50);
+    res.json({ count: results.length, tokens: results });
+  } catch (err: any) {
+    console.error('[TOKENS/SEARCH] Error:', err);
+    res.status(500).json({ error: 'Failed to search tokens', message: err.message });
+  }
+});
+// ============================================
+// FEATURED TOKENS ENDPOINT (TOP 1000 ONLY)
+// ============================================
+app.get('/api/tokens/featured', (req, res) => {
+  try {
+    let tokens = getCachedTokens();
+    let cacheValid = isTokenCacheValid();
+    let featuredTokens = tokens
+      .filter((t: any) => (t.liquidityUsd ?? t.liquidity ?? 0) > 5000)
+      .sort((a: any, b: any) => (b.volume24h ?? b.volume24hUsd ?? 0) - (a.volume24h ?? a.volume24hUsd ?? 0))
+      .slice(0, 1000)
+      .map((t: any) => ({
+        address: t.address,
+        symbol: t.symbol,
+        name: t.name,
+        decimals: t.decimals,
+        logoURI: t.logoURI,
+        liquidityUsd: t.liquidityUsd ?? t.liquidity ?? 0,
+        volume24h: t.volume24h ?? t.volume24hUsd ?? 0,
+        mint: t.mint ?? t.address
+      }));
+    res.json({ source: cacheValid ? 'memory-cache-featured' : 'stale-cache-featured', count: featuredTokens.length, tokens: featuredTokens });
+  } catch (err: any) {
+    console.error('[TOKENS/FEATURED] Error:', err);
+    res.status(500).json({ error: 'Failed to fetch featured tokens', message: err.message });
+  }
+});
 import express from 'express';
 import compression from 'compression';
 import cors from 'cors';
