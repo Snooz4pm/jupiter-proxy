@@ -8,6 +8,32 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { getMint, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { DiscoveryEngine } from './discoveryEngine';
 
+
+// ============================================
+// TOKEN SEARCH ENDPOINT (SYMBOL OR MINT)
+// ============================================
+// (Moved below app declaration)
+
+// ============================================
+// FEATURED TOKENS ENDPOINT (TOP 1000 ONLY)
+// ============================================
+// (Moved below app declaration)
+
+
+const app = express();
+app.use(compression());
+app.use(cors()); // Enable CORS for total data flow
+app.use(express.json({ limit: '5mb' })); // Allow Helius payloads
+
+// Diagnostic Middleware: Log every request to debug 404
+app.use((req, res, next) => {
+  console.log(`[DEBUG] ${req.method} ${req.url}`);
+  next();
+});
+
+const discovery = new DiscoveryEngine();
+discovery.start();
+
 // ============================================
 // TOKEN SEARCH ENDPOINT (SYMBOL OR MINT)
 // ============================================
@@ -60,20 +86,6 @@ app.get('/api/tokens/featured', (req, res) => {
     res.status(500).json({ error: 'Failed to fetch featured tokens', message: err.message });
   }
 });
-
-const app = express();
-app.use(compression());
-app.use(cors()); // Enable CORS for total data flow
-app.use(express.json({ limit: '5mb' })); // Allow Helius payloads
-
-// Diagnostic Middleware: Log every request to debug 404
-app.use((req, res, next) => {
-  console.log(`[DEBUG] ${req.method} ${req.url}`);
-  next();
-});
-
-const discovery = new DiscoveryEngine();
-discovery.start();
 
 // Verification endpoint
 app.get('/health', (req, res) => res.send('OK'));
