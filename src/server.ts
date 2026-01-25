@@ -1,4 +1,3 @@
-
 import express from 'express';
 import compression from 'compression';
 import cors from 'cors';
@@ -66,11 +65,11 @@ app.get('/api/tokens/featured', (req, res) => {
   try {
     let tokens = getCachedTokens();
     let cacheValid = isTokenCacheValid();
+    // RELAXED: No liquidity filter, just top 1000 by volume
     let featuredTokens = tokens
-      .filter((t: any) => (t.liquidityUsd ?? t.liquidity ?? 0) > 5000)
-      .sort((a: any, b: any) => (b.volume24h ?? b.volume24hUsd ?? 0) - (a.volume24h ?? a.volume24hUsd ?? 0))
+      .sort((a, b) => (b.volume24h ?? b.volume24hUsd ?? 0) - (a.volume24h ?? a.volume24hUsd ?? 0))
       .slice(0, 1000)
-      .map((t: any) => ({
+      .map((t) => ({
         address: t.address,
         symbol: t.symbol,
         name: t.name,
@@ -81,7 +80,7 @@ app.get('/api/tokens/featured', (req, res) => {
         mint: t.mint ?? t.address
       }));
     res.json({ source: cacheValid ? 'memory-cache-featured' : 'stale-cache-featured', count: featuredTokens.length, tokens: featuredTokens });
-  } catch (err: any) {
+  } catch (err) {
     console.error('[TOKENS/FEATURED] Error:', err);
     res.status(500).json({ error: 'Failed to fetch featured tokens', message: err.message });
   }
