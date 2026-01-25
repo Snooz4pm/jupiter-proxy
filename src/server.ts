@@ -71,22 +71,23 @@ app.get('/api/tokens/featured', (req, res) => {
       console.error('[FEATURED] getCachedTokens is not an array:', tokens);
       tokens = [];
     }
-    // RELAXED: No liquidity filter, just top 1000 by volume
-    let featuredTokens = tokens
-      .sort((a, b) => (b.volume24h ?? b.volume24hUsd ?? 0) - (a.volume24h ?? a.volume24hUsd ?? 0))
-      .slice(0, 1000)
-      .map((t) => ({
-        address: t.address,
-        symbol: t.symbol,
-        name: t.name,
-        decimals: t.decimals,
-        logoURI: t.logoURI,
-        liquidityUsd: t.liquidityUsd ?? t.liquidity ?? 0,
-        volume24h: t.volume24h ?? t.volume24hUsd ?? 0,
-        mint: t.mint ?? t.address
-      }));
-    console.log('[FEATURED] featuredTokens length:', featuredTokens.length);
-    res.json({ source: cacheValid ? 'memory-cache-featured' : 'stale-cache-featured', count: featuredTokens.length, tokens: featuredTokens });
+    // Enrichment debug (simulate enrichment)
+    const universe = tokens;
+    // Simulate enrichment: add liquidityUsd if missing
+    const enriched = universe.map(t => ({ ...t, liquidityUsd: t.liquidityUsd ?? t.liquidity ?? 0 }));
+    console.log('[FEATURED] ENRICHED SAMPLE:', enriched.slice(0, 3));
+    const featured = enriched.filter(t => t.liquidityUsd > 0);
+    console.log('[FEATURED] FEATURED COUNT:', featured.length);
+    let finalTokens;
+    let source;
+    if (featured.length > 0) {
+      finalTokens = featured.slice(0, 50);
+      source = 'liquidity-filter';
+    } else {
+      finalTokens = universe.slice(0, 50);
+      source = 'fallback-universe';
+    }
+    res.json({ source, count: finalTokens.length, tokens: finalTokens });
   } catch (err: any) {
     console.error('[TOKENS/FEATURED] Error:', err);
     res.status(500).json({ error: 'Failed to fetch featured tokens', message: err.message });
