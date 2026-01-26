@@ -80,11 +80,12 @@ app.get('/api/tokens/featured', (req, res) => {
     console.log('[FEATURED] FEATURED COUNT:', featured.length);
     let finalTokens;
     let source;
+    const FEATURED_LIMIT = 100;
     if (featured.length > 0) {
-      finalTokens = featured.slice(0, 50);
+      finalTokens = featured.slice(0, FEATURED_LIMIT);
       source = 'liquidity-filter';
     } else {
-      finalTokens = universe.slice(0, 50);
+      finalTokens = universe.slice(0, FEATURED_LIMIT);
       source = 'fallback-universe';
     }
     res.json({ source, count: finalTokens.length, tokens: finalTokens });
