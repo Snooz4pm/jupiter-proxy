@@ -34,25 +34,72 @@ const discovery = new DiscoveryEngine();
 discovery.start();
 
 // ============================================
-// TOKEN SEARCH ENDPOINT (SYMBOL OR MINT)
+// TOKEN SEARCH ENDPOINT (FULL UNIVERSE)
 // ============================================
 app.get('/api/tokens/search', (req, res) => {
   try {
     const q = (req.query.q || '').toString().trim().toLowerCase();
-    if (!q || q.length < 2) {
-      return res.json({ tokens: [] });
+    const limit = Math.min(parseInt(req.query.limit as string) || 100, 200);
+
+    // Allow single char for address searches
+    const isAddress = q.length >= 32 && /^[1-9a-hjkm-np-z]+$/i.test(q);
+    if (!q || (q.length < 2 && !isAddress)) {
+      return res.json({ tokens: [], count: 0 });
     }
-    let tokens = getCachedTokens();
-    // Match by symbol or mint (address)
-    let results = tokens.filter((t: any) => {
-      return (
-        (t.symbol && t.symbol.toLowerCase().includes(q)) ||
-        (t.name && t.name.toLowerCase().includes(q)) ||
-        (t.address && t.address.toLowerCase() === q) ||
-        (t.mint && t.mint.toLowerCase() === q)
+
+    const tokens = getCachedTokens();
+    console.log(`[SEARCH] Query: "${q}" | Universe: ${tokens.length} tokens`);
+
+    // For address search - exact or partial match
+    if (isAddress) {
+      const exactMatch = tokens.find((t: any) =>
+        t.address?.toLowerCase() === q || t.mint?.toLowerCase() === q
       );
-    }).slice(0, 50);
-    res.json({ count: results.length, tokens: results });
+      if (exactMatch) {
+        return res.json({ count: 1, tokens: [exactMatch], source: 'exact-address' });
+      }
+      // Partial address match
+      const partialMatches = tokens.filter((t: any) =>
+        t.address?.toLowerCase().includes(q) || t.mint?.toLowerCase().includes(q)
+      ).slice(0, limit);
+      return res.json({ count: partialMatches.length, tokens: partialMatches, source: 'partial-address' });
+    }
+
+    // Smart ranking for symbol/name search
+    const exactSymbol: any[] = [];
+    const startsWithSymbol: any[] = [];
+    const containsSymbol: any[] = [];
+    const startsWithName: any[] = [];
+    const containsName: any[] = [];
+
+    for (const t of tokens) {
+      const sym = t.symbol?.toLowerCase() || '';
+      const name = t.name?.toLowerCase() || '';
+
+      if (sym === q) {
+        exactSymbol.push(t);
+      } else if (sym.startsWith(q)) {
+        startsWithSymbol.push(t);
+      } else if (sym.includes(q)) {
+        containsSymbol.push(t);
+      } else if (name.startsWith(q)) {
+        startsWithName.push(t);
+      } else if (name.includes(q)) {
+        containsName.push(t);
+      }
+    }
+
+    // Combine with priority ranking
+    const results = [
+      ...exactSymbol,
+      ...startsWithSymbol,
+      ...containsSymbol,
+      ...startsWithName,
+      ...containsName
+    ].slice(0, limit);
+
+    console.log(`[SEARCH] Found: ${results.length} (exact:${exactSymbol.length}, starts:${startsWithSymbol.length})`);
+    res.json({ count: results.length, tokens: results, source: 'ranked-search' });
   } catch (err: any) {
     console.error('[TOKENS/SEARCH] Error:', err);
     res.status(500).json({ error: 'Failed to search tokens', message: err.message });
