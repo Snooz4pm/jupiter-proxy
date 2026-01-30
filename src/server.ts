@@ -1066,6 +1066,9 @@ const WHALE_WALLETS = [
   'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm', // Drift
 ];
 
+// Token info cache
+const tokenInfoCache = new Map<string, { symbol: string; logoURI?: string; decimals: number; price: number }>();
+
 async function getTokenInfo(mint: string): Promise<{ symbol: string; logoURI?: string; decimals: number; price: number } | null> {
   if (tokenInfoCache.has(mint)) return tokenInfoCache.get(mint)!;
 
