@@ -791,6 +791,88 @@ app.get('/token-risk/:mint', async (req, res) => {
 });
 
 // ============================================
+// ARGUS REALITY ENGINE (EMPIRICAL MODELING)
+// ============================================
+app.get('/api/argus/reality/:mint', async (req, res) => {
+  try {
+    const { mint } = req.params;
+    if (!mint) return res.status(400).json({ error: 'Missing mint' });
+
+    console.log(`[REALITY] Modeling empirical behavior for ${mint.slice(0, 8)}...`);
+
+    // 1. Fetch Token Data (DexScreener for Volume/Buys/Sells)
+    const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
+    if (!dexRes.ok) throw new Error('DexScreener unavailable');
+    const dexData = await dexRes.json();
+    const pair = (dexData.pairs || []).sort((a: any, b: any) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
+
+    if (!pair) {
+      return res.status(200).json({
+        capitalPer1Pct: null,
+        txConfidence: 0,
+        ammConsistency: 0,
+        washPenalty: 1,
+        metrics: {
+          volume24hUSD: 0,
+          liquidityUSD: 0,
+          netBuyUSD: 0,
+          tradeCount: 0
+        }
+      });
+    }
+
+    // 2. Extract Metrics
+    const volume24h = pair.volume?.h24 || 0;
+    const buys24h = pair.txns?.h24?.buys || 0;
+    const sells24h = pair.txns?.h24?.sells || 0;
+    const totalTxns = buys24h + sells24h;
+    const priceChange24h = pair.priceChange?.h24 || 0;
+    const liquidityUSD = pair.liquidity?.usd || 0;
+
+    // Heuristic for Net Buy USD: (buys / total) * totalVolume - (sells / total) * totalVolume
+    const netBuyUSD = totalTxns > 0 ? ((buys24h - sells24h) / totalTxns) * volume24h : 0;
+
+    // 3. Derived Price Impact modeling
+    // CapitalPer1Pct = NetBuyUSD / PriceImpactPct * 100
+    let capitalPer1Pct = null;
+    if (Math.abs(priceChange24h) > 0.1 && Math.abs(netBuyUSD) > 500) {
+      capitalPer1Pct = Math.abs(netBuyUSD) / (Math.abs(priceChange24h));
+    } else {
+      // Fallback to AMM math if 24h data is too noisy
+      capitalPer1Pct = liquidityUSD * 0.02;
+    }
+
+    // 4. Confidence Scoring (from System Prompt)
+    const volScore = volume24h > 1000000 ? 1 : volume24h > 250000 ? 0.7 : 0.4;
+    const tradeScore = totalTxns > 1000 ? 1 : totalTxns > 200 ? 0.7 : 0.4;
+    const consistencyScore = Math.abs(netBuyUSD) / (volume24h || 1) > 0.2 ? 1 : 0.6;
+    const txConfidence = (0.4 * volScore + 0.3 * tradeScore + 0.3 * consistencyScore);
+
+    // 5. AMM Consistency
+    const ammExpectedSlippage = (Math.abs(netBuyUSD) / (2 * liquidityUSD)) * 100;
+    const ammConsistency = Math.abs(priceChange24h) > 0 ?
+      Math.min(1.2, Math.max(0.4, ammExpectedSlippage / Math.abs(priceChange24h))) : 1;
+
+    res.json({
+      capitalPer1Pct: capitalPer1Pct || (liquidityUSD * 0.02),
+      txConfidence,
+      ammConsistency,
+      washPenalty: 0.9,
+      metrics: {
+        volume24hUSD: volume24h,
+        liquidityUSD: liquidityUSD,
+        netBuyUSD: netBuyUSD,
+        tradeCount: totalTxns
+      }
+    });
+
+  } catch (err: any) {
+    console.error('[REALITY] Error:', err);
+    res.status(500).json({ error: 'Reality modeling failed', message: err.message });
+  }
+});
+
+// ============================================
 // ORDER BOOK DEPTH ENDPOINT
 // ============================================
 app.get('/api/liquidity/depth/:mint', async (req, res) => {
@@ -984,17 +1066,19 @@ const WHALE_WALLETS = [
   'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm', // Drift
 ];
 
-// Token info cache
-const tokenInfoCache = new Map<string, { symbol: string; logoURI?: string; decimals: number }>();
-
-async function getTokenInfo(mint: string): Promise<{ symbol: string; logoURI?: string; decimals: number } | null> {
+async function getTokenInfo(mint: string): Promise<{ symbol: string; logoURI?: string; decimals: number; price: number } | null> {
   if (tokenInfoCache.has(mint)) return tokenInfoCache.get(mint)!;
 
   // Try to find in our cached token list
   const cachedTokens = getCachedTokens();
   const found = cachedTokens.find((t: any) => t.address === mint);
   if (found) {
-    const info = { symbol: found.symbol, logoURI: found.logoURI, decimals: found.decimals || 6 };
+    const info = {
+      symbol: found.symbol,
+      logoURI: found.logoURI,
+      decimals: found.decimals || 6,
+      price: found.price || found.priceUsd || 0
+    };
     tokenInfoCache.set(mint, info);
     return info;
   }
