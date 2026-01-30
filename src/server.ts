@@ -853,6 +853,20 @@ app.get('/api/argus/reality/:mint', async (req, res) => {
     const ammConsistency = Math.abs(priceChange24h) > 0 ?
       Math.min(1.2, Math.max(0.4, ammExpectedSlippage / Math.abs(priceChange24h))) : 1;
 
+    // 6. Generate Mock Recent Transactions (Skeleton Mode)
+    const recentTxs = [];
+    for (let i = 0; i < 5; i++) {
+      const isBuy = Math.random() > 0.4;
+      const usdValue = (volume24h / (totalTxns || 1) || 100) * (0.5 + Math.random() * 2);
+      recentTxs.push({
+        signature: Math.random().toString(36).substring(2, 12).toUpperCase(),
+        time: Date.now() - (i * 30000 + Math.random() * 10000),
+        side: isBuy ? 'BUY' : 'SELL',
+        usdValue: usdValue,
+        wallet: 'Whale' + Math.random().toString(36).substring(2, 5).toUpperCase()
+      });
+    }
+
     res.json({
       capitalPer1Pct: capitalPer1Pct || (liquidityUSD * 0.02),
       txConfidence,
@@ -863,7 +877,8 @@ app.get('/api/argus/reality/:mint', async (req, res) => {
         liquidityUSD: liquidityUSD,
         netBuyUSD: netBuyUSD,
         tradeCount: totalTxns
-      }
+      },
+      recentTxs
     });
 
   } catch (err: any) {
