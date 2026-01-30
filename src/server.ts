@@ -496,7 +496,7 @@ app.get('/tokens', async (req, res) => {
 
     const endTime = Date.now();
     const payloadSize = Buffer.byteLength(JSON.stringify(responsePayload));
-    console.log(`[TOKENS] /tokens request | mode=${mode || 'full'} | status=${status} | count=${responsePayload.count} | size=${(payloadSize/1024/1024).toFixed(2)}MB | time=${endTime-startTime}ms`);
+    console.log(`[TOKENS] /tokens request | mode=${mode || 'full'} | status=${status} | count=${responsePayload.count} | size=${(payloadSize / 1024 / 1024).toFixed(2)}MB | time=${endTime - startTime}ms`);
 
     // If cache is stale, refresh in background (do not await)
     if (!cacheValid) {
@@ -552,7 +552,7 @@ app.get('/tokens', async (req, res) => {
   } catch (err: any) {
     status = 500;
     const endTime = Date.now();
-    console.error(`[TOKENS] /tokens error | status=500 | time=${endTime-startTime}ms | error=${err.message}`);
+    console.error(`[TOKENS] /tokens error | status=500 | time=${endTime - startTime}ms | error=${err.message}`);
     res.status(500).json({ error: 'Failed to fetch tokens', message: err.message });
   }
 });
@@ -787,6 +787,38 @@ app.get('/token-risk/:mint', async (req, res) => {
     });
   } catch (error) {
     res.json({ risk: 'unknown', error: String(error) });
+  }
+});
+
+// ============================================
+// ORDER BOOK DEPTH ENDPOINT
+// ============================================
+app.get('/api/orderbook/:mint', async (req, res) => {
+  try {
+    const { mint } = req.params;
+    if (!mint) return res.status(400).json({ error: 'Missing mint' });
+
+    console.log(`[ORDERBOOK] Fetching depth for ${mint.slice(0, 8)}...`);
+
+    const depthRes = await fetch(`https://quote-api.jup.ag/v6/depth?mint=${mint}&depth=20`);
+    if (!depthRes.ok) {
+      return res.status(depthRes.status).json({ error: 'Failed to fetch depth from Jupiter' });
+    }
+
+    const data = await depthRes.json();
+
+    // Transform to OrderBookSnapshot format for Argus
+    // Jupiter returns { bids: [price, size][], asks: [price, size][] }
+    const snapshot = {
+      bids: data.bids.map(([price, size]: [number, number]) => ({ price, sizeUSD: price * size })),
+      asks: data.asks.map(([price, size]: [number, number]) => ({ price, sizeUSD: price * size })),
+      lastPrice: data.bids[0]?.[0] || 0
+    };
+
+    res.json(snapshot);
+  } catch (err: any) {
+    console.error('[ORDERBOOK] Error:', err);
+    res.status(500).json({ error: 'Internal server error', message: err.message });
   }
 });
 
