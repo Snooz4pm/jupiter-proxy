@@ -798,36 +798,42 @@ app.get('/api/orderbook/:mint', async (req, res) => {
     const { mint } = req.params;
     if (!mint) return res.status(400).json({ error: 'Missing mint' });
 
-    console.log(`[ORDERBOOK] Fetching depth for ${mint.slice(0, 8)}...`);
+    console.log(`[ORDERBOOK] Fetching limit-order depth for ${mint.slice(0, 8)}...`);
 
+    // Jupiter Limit Order API provides actual bids/asks
     const urls = [
-      `https://api.jup.ag/swap/v2/depth?mint=${mint}&depth=20`,
-      `https://quote-api.jup.ag/v6/depth?mint=${mint}&depth=20`
+      `https://limit-order.jup.ag/v1/orderbook/${mint}`,
     ];
 
     const depthRes = await fetchWithFailover(urls, { method: 'GET' });
 
     if (!depthRes) {
-      return res.status(502).json({ error: 'JUPITER_UNAVAILABLE', message: 'Failed to fetch depth from all Jupiter nodes' });
+      return res.status(502).json({ error: 'LIMIT_ORDER_UNAVAILABLE', message: 'Failed to fetch limit order book' });
     }
 
     if (!depthRes.ok) {
       const text = await depthRes.text();
-      console.log(`[ORDERBOOK] Jupiter error: ${depthRes.status}`, text);
-      return res.status(depthRes.status).json({ error: 'Jupiter API Error', message: text });
+      return res.status(depthRes.status).json({ error: 'Jupiter Limit Order Error', message: text });
     }
 
     const data = await depthRes.json();
 
-    if (!data.bids || !data.asks) {
-      return res.status(200).json({ bids: [], asks: [], lastPrice: 0, error: 'NO_LIQUIDITY' });
-    }
+    // Map bids/asks and handle missing sizes/prices
+    // Format: { bids: { price: string, amount: string }[], asks: ... }
+    const bids = (data.bids || []).map((b: any) => ({
+      price: parseFloat(b.price),
+      sizeUSD: parseFloat(b.price) * (parseFloat(b.amount) / 10 ** 6) // Rough estimate for sizing
+    }));
 
-    // Transform to OrderBookSnapshot format for Argus
+    const asks = (data.asks || []).map((a: any) => ({
+      price: parseFloat(a.price),
+      sizeUSD: parseFloat(a.price) * (parseFloat(a.amount) / 10 ** 6)
+    }));
+
     const snapshot = {
-      bids: data.bids.map(([price, size]: [number, number]) => ({ price, sizeUSD: price * size })),
-      asks: data.asks.map(([price, size]: [number, number]) => ({ price, sizeUSD: price * size })),
-      lastPrice: data.bids[0]?.[0] || 0
+      bids,
+      asks,
+      lastPrice: bids[0]?.price || 0
     };
 
     res.json(snapshot);
