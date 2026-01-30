@@ -798,42 +798,68 @@ app.get('/api/orderbook/:mint', async (req, res) => {
     const { mint } = req.params;
     if (!mint) return res.status(400).json({ error: 'Missing mint' });
 
-    console.log(`[ORDERBOOK] Fetching limit-order depth for ${mint.slice(0, 8)}...`);
+    // 1. Identify Pair (Default to USDC Quote)
+    const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const baseMint = mint;
+    const url = `https://limit-order.jup.ag/v1/orderbook/${baseMint}/${USDC_MINT}`;
 
-    // Jupiter Limit Order API provides actual bids/asks
-    const urls = [
-      `https://limit-order.jup.ag/v1/orderbook/${mint}`,
-    ];
+    console.log(`[ORDERBOOK] Fetching limit-order depth: ${baseMint.slice(0, 8)}/USDC`);
 
-    const depthRes = await fetchWithFailover(urls, { method: 'GET' });
+    const depthRes = await fetchWithFailover([url], { method: 'GET' });
 
-    if (!depthRes) {
-      return res.status(502).json({ error: 'LIMIT_ORDER_UNAVAILABLE', message: 'Failed to fetch limit order book' });
-    }
-
-    if (!depthRes.ok) {
-      const text = await depthRes.text();
-      return res.status(depthRes.status).json({ error: 'Jupiter Limit Order Error', message: text });
+    if (!depthRes || !depthRes.ok) {
+      // Not an error, just market reality: no limit market exists
+      return res.status(200).json({
+        orderBookAvailable: false,
+        message: 'No Jupiter limit order market for this pair',
+        bids: [],
+        asks: [],
+        lastPrice: 0
+      });
     }
 
     const data = await depthRes.json();
 
-    // Map bids/asks and handle missing sizes/prices
-    // Format: { bids: { price: string, amount: string }[], asks: ... }
+    if (!data.bids?.length && !data.asks?.length) {
+      return res.status(200).json({
+        orderBookAvailable: false,
+        message: 'Empty limit order book',
+        bids: [],
+        asks: [],
+        lastPrice: 0
+      });
+    }
+
+    // 2. Fetch Decimals for correct sizing
+    let decimals = 6;
+    try {
+      const info = await getTokenInfo(mint);
+      if (info) {
+        decimals = info.decimals;
+      } else {
+        const mintInfo = await getMint(connection, new PublicKey(mint));
+        decimals = mintInfo.decimals;
+      }
+    } catch (e) {
+      console.warn(`[ORDERBOOK] Failed to fetch decimals for ${mint}, falling back to 6`);
+    }
+
+    // 3. Map bids/asks with real decimals
     const bids = (data.bids || []).map((b: any) => ({
       price: parseFloat(b.price),
-      sizeUSD: parseFloat(b.price) * (parseFloat(b.amount) / 10 ** 6) // Rough estimate for sizing
+      sizeUSD: parseFloat(b.price) * (parseFloat(b.amount) / 10 ** decimals)
     }));
 
     const asks = (data.asks || []).map((a: any) => ({
       price: parseFloat(a.price),
-      sizeUSD: parseFloat(a.price) * (parseFloat(a.amount) / 10 ** 6)
+      sizeUSD: parseFloat(a.price) * (parseFloat(a.amount) / 10 ** decimals)
     }));
 
     const snapshot = {
+      orderBookAvailable: true,
       bids,
       asks,
-      lastPrice: bids[0]?.price || 0
+      lastPrice: bids[0]?.price ?? asks[0]?.price ?? 0
     };
 
     res.json(snapshot);
