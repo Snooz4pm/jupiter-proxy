@@ -793,6 +793,89 @@ app.get('/token-risk/:mint', async (req, res) => {
 // ============================================
 // ORDER BOOK DEPTH ENDPOINT
 // ============================================
+app.get('/api/liquidity/depth/:mint', async (req, res) => {
+  try {
+    const { mint } = req.params;
+    if (!mint) return res.status(400).json({ error: 'Missing mint' });
+
+    const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+    // 1. Get Decimals and Price
+    const info = await getTokenInfo(mint);
+    const decimals = info?.decimals || 9;
+    const price = info?.price || 0;
+
+    if (price === 0) {
+      return res.status(200).json({ currentPrice: 0, tiers: [], buySideUSD: 0 });
+    }
+
+    // 2. Probe Jupiter Quote API for Price Impact
+    // Amounts in USD: $1k, $5k, $25k, $100k, $500k
+    const testAmountsUSD = [1000, 5000, 25000, 100000, 500000];
+
+    console.log(`[LIQUIDITY] Probing AMM depth for ${mint.slice(0, 8)}...`);
+
+    const probes = await Promise.all(testAmountsUSD.map(async (usd) => {
+      try {
+        const amountAtoms = Math.floor((usd / price) * 10 ** decimals);
+        const url = `https://quote-api.jup.ag/v6/quote?inputMint=${mint}&outputMint=${USDC_MINT}&amount=${amountAtoms}&slippageBps=0&onlyDirectRoutes=false`;
+        const quoteRes = await fetch(url);
+        if (!quoteRes.ok) return null;
+        const data = await quoteRes.json();
+        return {
+          usd,
+          impact: parseFloat(data.priceImpactPct || 0)
+        };
+      } catch (e) {
+        return null;
+      }
+    }));
+
+    const validProbes = probes.filter((p): p is { usd: number, impact: number } => p !== null && p.impact > 0);
+
+    // 3. Interpolate for 1%, 5%, 10%
+    const targets = [1, 5, 10];
+    const tiers = targets.map(target => {
+      // Find flanking probes
+      let low = { usd: 0, impact: 0 };
+      let high = validProbes[validProbes.length - 1] || { usd: 0, impact: 0 };
+
+      for (const p of validProbes) {
+        if (p.impact >= target) {
+          high = p;
+          break;
+        }
+        low = p;
+      }
+
+      let interpolatedUSD = 0;
+      if (high.impact === low.impact) {
+        interpolatedUSD = high.usd;
+      } else {
+        const impactDiff = high.impact - low.impact;
+        const progress = (target - low.impact) / impactDiff;
+        interpolatedUSD = low.usd + (high.usd - low.usd) * progress;
+      }
+
+      return {
+        impactPct: target,
+        totalUSD: interpolatedUSD,
+        targetPrice: price * (1 + target / 100)
+      };
+    });
+
+    res.json({
+      currentPrice: price,
+      tiers,
+      buySideUSD: tiers[0]?.totalUSD * 0.8 // Heuristic: Buy side is often 20% thinner than sell side
+    });
+
+  } catch (err: any) {
+    console.error('[LIQUIDITY] Error:', err);
+    res.status(500).json({ error: 'Internal server error', message: err.message });
+  }
+});
+
 app.get('/api/orderbook/:mint', async (req, res) => {
   try {
     const { mint } = req.params;
